@@ -1,184 +1,53 @@
 """
-Módulo de Taxonomía de Inteligencia Artificial.
-Proyecto: Análisis de señales de tránsito mediante IA con cámara.
+Orquestador Principal - Sistema Inteligente Híbrido Aplicado.
+Proyecto: Análisis y reconocimiento de señales de tránsito con IA y acciones de control.
 Estandarizado para Python 3.13.x.
 """
 
-from dataclasses import dataclass
 from pathlib import Path
-import csv
-import re
-import unicodedata
+import sys
 
-ROOT = Path(__file__).resolve().parent.parent
-CSV_FILE = ROOT / "data" / "casos_ia.csv"
-REPORT_FILE = ROOT / "reports" / "semana03.md"
+# Asegurar que el directorio 'src' esté en el path de Python
+ROOT = Path(__file__).resolve().parent
+sys.path.append(str(ROOT))
 
-@dataclass(frozen=True)
-class Category:
-    name: str
-    keywords: tuple[str, ...]
+# Importar componentes de la Semana 02 y Semana 03
+from semana02_fundamentos import model, motor_de_reglas_vehicular, X_test, y_test, accuracy_score, confusion_matrix
+from semana03_taxonomia import read_cases, classify_problem, write_report
 
-CATEGORIES = [
-    Category("Visión por computador", (
-        "imagen", "imagenes", "foto", "fotografia", "camara",
-        "rostro", "rostros", "peaton", "peatones", "senal", "senales", "fotogramas", "lente"
-    )),
-    Category("Procesamiento de lenguaje natural", (
-        "texto", "comentario", "comentarios", "correo", "correos", "chatbot",
-        "contrato", "contratos", "nombres", "lenguaje", "asistente virtual"
-    )),
-    Category("Aprendizaje automático predictivo", (
-        "predecir", "probabilidad", "demanda", "fraude", "fraudes", "sensores", "confianza"
-    )),
-    Category("Sistemas de recomendación", (
-        "recomendar", "preferencias", "historial", "sugerir", "actualizaciones"
-    )),
-    Category("Búsqueda y optimización", (
-        "ruta", "rutas", "horario", "horarios", "combinacion optima",
-        "optimizar", "capacidad maxima", "resolucion"
-    )),
-    Category("Sistemas expertos", (
-        "diagnostico", "diagnosticos", "reglas", "politicas", "solicitud", "frenado", "alerta"
-    )),
-    Category("Robótica y sistemas autónomos", (
-        "robot", "robots", "dron", "drones", "vehiculo", "obstaculos", "embebido"
-    )),
-]
 
-# Reglas personalizadas adaptadas al dominio de señales de tránsito y visión artificial
-CUSTOM_RULES = {
-    "Visión por computador": ("fotogramas", "lente", "video"),
-    "Aprendizaje automático predictivo": ("confianza",),
-    "Búsqueda y optimización": ("resolucion", "latencias"),
-    "Sistemas expertos": ("frenado", "alerta"),
-    "Robótica y sistemas autónomos": ("vehiculo", "embebido"),
-}
-
-# Referencia manual correspondiente a los 20 casos del CSV de señales de tránsito
-MANUAL_REFERENCE = [
-    "Visión por computador",
-    "Visión por computador",
-    "Aprendizaje automático predictivo",
-    "Búsqueda y optimización",
-    "Sistemas de recomendación",
-    "Visión por computador",
-    "Visión por computador",
-    "Procesamiento de lenguaje natural",
-    "Aprendizaje automático predictivo",
-    "Sistemas expertos",
-    "Visión por computador",
-    "Visión por computador",
-    "Robótica y sistemas autónomos",
-    "Sistemas expertos",
-    "Visión por computador",
-    "Visión por computador",
-    "Visión por computador",
-    "Sistemas expertos",
-    "Búsqueda y optimización",
-    "Búsqueda y optimización",
-]
-
-def normalize(text: str) -> str:
-    text = text.strip().lower()
-    text = unicodedata.normalize("NFD", text)
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-    text = re.sub(r"[^a-z0-9]+", "", text)
-    return re.sub(r"\s+", "", text).strip()
-
-def normalize_header(text: str) -> str:
-    return normalize(text).replace("descripcion", "")
-
-def contains_keyword(text: str, keyword: str) -> bool:
-    normalized_text = f" {normalize(text)} "
-    normalized_keyword = normalize(keyword)
-    return f"{normalized_keyword}" in normalized_text
-
-def build_categories() -> list[Category]:
-    result = []
-    for category in CATEGORIES:
-        extra = CUSTOM_RULES.get(category.name, ())
-        result.append(Category(category.name, category.keywords + tuple(extra)))
-    return result
-
-def classify_problem(text: str) -> tuple[str, list[str], dict[str, int]]:
-    scores = {}
-    for category in build_categories():
-        score = sum(contains_keyword(text, keyword) for keyword in category.keywords)
-        scores[category.name] = score
+def ejecutar_semana_02():
+    print("=" * 80)
+    print("FASE 1: ARQUITECTURA BASE, MODELO DE IA Y MOTOR DE REGLAS (SEMANA 02)")
+    print("=" * 80)
+    print(f"Muestras de prueba evaluadas: {len(X_test)}")
     
-    matches = [
-        (score, index, category.name)
-        for index, category in enumerate(build_categories())
-        if (score := scores[category.name]) > 0
-    ]
-    matches.sort(key=lambda item: (-item[0], item[1]))
-    detected = [name for _, _, name in matches]
-    primary = detected[0] if detected else "Requiere análisis"
-    return primary, detected or ["Requiere análisis"], scores
+    pred = model.predict(X_test)
+    acc = accuracy_score(y_test, pred)
+    print(f"Accuracy del modelo de clasificación visual: {acc:.3f}\n")
 
-def read_cases() -> list[str]:
-    if not CSV_FILE.exists():
-        raise FileNotFoundError(f"No existe {CSV_FILE}. Crea data/casos_ia.csv antes de ejecutar la práctica.")
+    print("--- MATRIZ DE EFECTIVIDAD (CONFUSIÓN) ---")
+    print("Filas: Clases Reales | Columnas: Clases Predichas (PARE, CEDA EL PASO, LÍMITE)")
+    print(confusion_matrix(y_test, pred))
+    print()
+
+    print("--- SIMULACIÓN DEL MOTOR DE INFERENCIA Y ACCIONES ---")
+    for i in range(3):
+        clase_detectada = pred[i]
+        regla_aplicada = motor_de_reglas_vehicular(clase_detectada)
+        print(f"Fotograma de prueba [{i+1}] -> Señal detectada por IA: {regla_aplicada['senial']}")
+        print(f"   ↳ Acción ejecutada: {regla_aplicada['accion']}")
+        print(f"   ↳ Prioridad de control: {regla_aplicada['prioridad']}\n")
+
+
+def ejecutar_semana_03():
+    print("=" * 80)
+    print("FASE 2: TAXONOMÍA DE INTELIGENCIA ARTIFICIAL Y ANÁLISIS DE CASOS (SEMANA 03)")
+    print("=" * 80)
     
-    with CSV_FILE.open("r", encoding="utf-8-sig", newline="") as file:
-        reader = csv.DictReader(file)
-        if not reader.fieldnames:
-            raise ValueError("El CSV está vacío o no contiene encabezados.")
-        
-        original_headers = list(reader.fieldnames)
-        reader.fieldnames = [normalize_header(name) for name in reader.fieldnames]
-        
-        if "descripcion" not in reader.fieldnames:
-            raise ValueError(f"No se encontró la columna 'descripcion'. Encabezados encontrados: {original_headers}")
-        
-        cases = []
-        for row in reader:
-            description = (row.get("descripcion") or "").strip()
-            if description:
-                cases.append(description)
-                
-        if len(cases) < 20:
-            raise ValueError(f"La práctica requiere al menos 20 casos y el archivo contiene {len(cases)}.")
-        return cases
-
-def write_report(results: list[dict]) -> None:
-    REPORT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    reference_count = min(len(results), len(MANUAL_REFERENCE))
-    matches = sum(
-        1 for i in range(reference_count) if results[i]["primary"] == MANUAL_REFERENCE[i]
-    )
-    accuracy = 100 * matches / reference_count if reference_count else 0.0
-
-    lines = [
-        "# Semana 03: Taxonomía de Inteligencia Artificial",
-        "## Resultado automático frente a clasificación manual de referencia",
-        "| Caso | Categoría automática principal | Categorías detectadas | Manual | Estado |",
-        "|---|---|---|---|---|",
-    ]
-    for i, result in enumerate(results, start=1):
-        manual = MANUAL_REFERENCE[i - 1] if i - 1 < len(MANUAL_REFERENCE) else "Pendiente"
-        status = "Coincide" if result["primary"] == manual else "Revisar"
-        detected = ", ".join(result["detected"])
-        lines.append(f"| {i} | {result['primary']} | {detected} | {manual} | {status} |")
-
-    lines += [
-        f"\nCoincidencia con la referencia: **{accuracy:.2f}%** ({matches}/{reference_count}).",
-        "## Cinco reglas propias",
-        "Se ampliaron palabras clave en `CUSTOM_RULES` para capturar terminología específica de captura de video vehicular, umbrales de confianza, latencias de procesamiento y respuestas de frenado en sistemas embebidos de tráfico.",
-        "## Discrepancias y análisis",
-        "Se evaluaron los casos donde convergen la visión artificial y los sistemas expertos (por ejemplo, detectar la señal y activar alertas de frenado), priorizando el núcleo perceptivo o de control según el objetivo principal del requerimiento.",
-        "## Nota técnica",
-        "Un problema real en sistemas híbridos pertenece a varias áreas de IA. La columna 'principal' usa la categoría con mayor cantidad de coincidencias.",
-    ]
-    REPORT_FILE.write_text("\n".join(lines), encoding="utf-8")
-
-def main() -> None:
     cases = read_cases()
     results = []
-    print("=" * 80)
-    print("SEMANA 03: TAXONOMÍA DE INTELIGENCIA ARTIFICIAL")
-    print("=" * 80)
+    
     for i, case in enumerate(cases, start=1):
         primary, detected, scores = classify_problem(case)
         results.append({
@@ -193,7 +62,26 @@ def main() -> None:
     
     write_report(results)
     print(f"\nCasos procesados: {len(results)}")
-    print(f"Reporte generado: {REPORT_FILE}")
+    print(f"Reporte taxonómico generado exitosamente.")
+
+
+def main():
+    print("\n" + "#" * 80)
+    print(" # INICIO DEL SISTEMA INTELIGENTE HÍBRIDO APLICADO - SEÑALES DE TRÁNSITO #")
+    print("#" * 80 + "\n")
+    
+    # Ejecutar componente Semana 02
+    ejecutar_semana_02()
+    
+    print("\n")
+    
+    # Ejecutar componente Semana 03
+    ejecutar_semana_03()
+    
+    print("\n" + "=" * 80)
+    print("EJECUCIÓN GENERAL DEL SISTEMA COMPLETADA EXITOSAMENTE")
+    print("=" * 80)
+
 
 if __name__ == "__main__":
     main()
