@@ -28,8 +28,8 @@ El proyecto combina un enfoque modular y híbrido adaptado a las necesidades de 
    ##  Autores
 
 - Estudiantes: 
-               - Jimmy Alexander Beltran Beltran
+   - Jimmy Alexander Beltran Beltran
 
-               - Ivan Andres Salas Leiva
+   - Ivan Andres Salas Leiva
 
 - Institución: ETITC - 10º Semestre

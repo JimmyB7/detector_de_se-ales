@@ -1,8 +1,4 @@
-"""
-Orquestador Principal - Sistema Inteligente Híbrido Aplicado.
-Proyecto: Análisis y reconocimiento de señales de tránsito con IA y acciones de control.
-Estandarizado para Python 3.13.x.
-"""
+
 
 from pathlib import Path
 import sys

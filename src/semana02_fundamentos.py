@@ -1,8 +1,4 @@
-"""
-Módulo base para el Sistema Inteligente Híbrido Aplicado.
-Proyecto: Análisis y reconocimiento de señales de tránsito con IA y acciones de control.
-Estandarizado para Python 3.13.x.
-"""
+
 
 from sklearn.datasets import make_classification
 from sklearn.linear_model import LogisticRegression
