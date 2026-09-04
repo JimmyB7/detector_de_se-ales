@@ -1,0 +1,8 @@
+Al detectar una senal de PARE o STOP el vehiculo debe detenerse por completo antes de la linea de demarcacion.
+La senal de CEDA EL PASO exige reducir la velocidad y dar prioridad a los vehiculos en la via principal.
+El limite de velocidad indica la velocidad maxima permitida en kilometros por hora bajo condiciones normales.
+Si la camara detecta un semaforo en luz roja se debe activar el comando de frenado de emergencia.
+La senal de zona escolar obliga a reducir la velocidad a un maximo de treinta kilometros por hora.
+Si la lente de la camara de vision artificial esta obstruida o sucia se debe emitir una alerta de mantenimiento.
+Las senales de direccion obligatoria indican el sentido unico de circulacion para evitar transitar en contravia.
+En presencia de piso mojado o lluvia la distancia de frenado automatico debe incrementarse por seguridad.
