@@ -34,8 +34,8 @@ def obtener_vecinos(nodo: tuple):
     for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         nr, nc = r + dr, c + dc
         if 0 <= nr < len(MAPA_VIAL) and 0 <= nc < len(MAPA_VIAL[0]):
-            if MAPA_VIAL[nr][nc] != "#":
-                yield (nr, nc)
+            if MAPA_VIAL[nr][nc] != "":
+                yield (nr, nc)#
 
 
 def planificar_ruta_astar(inicio: tuple, meta: tuple) -> list[tuple] | None:
