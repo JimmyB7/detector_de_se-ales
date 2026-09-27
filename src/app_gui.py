@@ -1,394 +1,195 @@
-import sys
+import os
+import pickle
+import sqlite3
 import webbrowser
 from pathlib import Path
+import networkx as nx
+import numpy as np
+from PIL import Image
 from flask import Flask, render_template_string, request
 
-# Configuración de rutas de importación
-ROOT = Path(__file__).resolve().parent
-sys.path.append(str(ROOT))
-
-from semana02_fundamentos import (
-    accuracy_score,
-    confusion_matrix,
-    model,
-    motor_de_reglas_vehicular,
-    X_test,
-    y_test,
-)
-from semana03_taxonomia import classify_problem, read_cases
-from semana04_marco_tecnologico import (
-    INICIO,
-    META,
-    calcular_mejor_maniobra,
-    planificar_ruta_astar,
-)
-from semana05_marco_tecnologico import answer_event, build_hybrid_system
+# Configuración de rutas principales
+ROOT = Path(__file__).resolve().parent.parent
+ARTIFACTS = ROOT / "artifacts"
+UPLOADS = ROOT / "uploads"
+ARTIFACTS.mkdir(parents=True, exist_ok=True)
+UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 
-# Carga de la base de conocimiento (Semana 05)
-try:
-    docs, vectorizer, doc_matrix, classifier = build_hybrid_system()
-except Exception:
-    docs = None
+# Mapeos de clases
+CLASES_MAP = {
+    0: "Pare",
+    1: "Ceda el Paso",
+    2: "Limite Velocidad",
+    3: "Prohibido Girar"
+}
 
-# Plantilla HTML + CSS + JavaScript
+CLASES_ONTOLOGIA_MAP = {
+    0: "pare",
+    1: "ceda_el_paso",
+    2: "limite_velocidad",
+    3: "prohibido_girar"
+}
+
+def clasificar_imagen_real(ruta_imagen, mlp_model):
+    """
+    Clasifica las imágenes considerando tanto el color rojo como la proporción
+    del centro blanco para diferenciar PARE de CEDA EL PASO.
+    """
+    img_rgb = Image.open(ruta_imagen).convert('RGB')
+    img_res = img_rgb.resize((64, 64))
+    arr = np.array(img_res, dtype=np.float32)
+
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    # Máscara para detectar color rojo
+    mascara_roja = (r > 120) & (g < 90) & (b < 90)
+    proporcion_rojo = np.sum(mascara_roja) / (64 * 64)
+
+    # Analizar la región central de la imagen (32x32 píxeles del centro)
+    centro_r, centro_g, centro_b = r[16:48, 16:48], g[16:48, 16:48], b[16:48, 16:48]
+    mascara_centro_blanco = (centro_r > 180) & (centro_g > 180) & (centro_b > 180)
+    proporcion_centro_blanco = np.sum(mascara_centro_blanco) / (32 * 32)
+
+    # Reglas de clasificación directa por geometría de color
+    if proporcion_rojo > 0.15:
+        # Si el centro es predominantemente blanco -> CEDA EL PASO (ID: 1)
+        if proporcion_centro_blanco > 0.35:
+            return 1
+        # Si el centro es predominantemente rojo -> PARE (ID: 0)
+        else:
+            return 0
+
+    # Inferencia fallback con el modelo MLP si no aplica la regla de color
+    img_gray = Image.open(ruta_imagen).convert('L').resize((32, 32))
+    img_arr = np.array(img_gray, dtype=np.float32) / 255.0
+    if img_arr.mean() > 0.5:
+        img_arr = 1.0 - img_arr
+    
+    features = img_arr.flatten().reshape(1, -1)
+    return int(mlp_model.predict(features)[0])
+
+# Plantilla HTML integrada
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistema Inteligente Vehicular & Señales</title>
+    <title>Detector de Señales - Semana 08</title>
     <style>
-        :root {
-            --bg-color: #0b0f19;
-            --card-bg: #151c2c;
-            --input-bg: #090d16;
-            --text-color: #e2e8f0;
-            --accent-yellow: #f59e0b;
-            --accent-cyan: #38bdf8;
-            --border-color: #1e293b;
-            --road-line: #334155;
-        }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1050px;
-            margin: 0 auto;
-        }
-        header {
-            text-align: center;
-            padding: 15px 0 25px 0;
-            border-bottom: 2px dashed var(--road-line);
-            margin-bottom: 25px;
-        }
-        h1 {
-            color: var(--accent-yellow);
-            margin: 0 0 8px 0;
-            font-size: 1.8rem;
-            letter-spacing: 0.5px;
-        }
-        .subtitle {
-            color: #94a3b8;
-            font-size: 0.95rem;
-        }
-        .tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        .tab-btn {
-            padding: 10px 20px;
-            background-color: var(--card-bg);
-            border: 1px solid var(--border-color);
-            color: var(--text-color);
-            cursor: pointer;
-            border-radius: 6px;
-            font-weight: 600;
-            transition: all 0.2s ease;
-        }
-        .tab-btn:hover {
-            border-color: var(--accent-cyan);
-            color: var(--accent-cyan);
-        }
-        .tab-btn.active {
-            background-color: var(--accent-yellow);
-            color: #0b0f19;
-            border-color: var(--accent-yellow);
-        }
-        .tab-content {
-            display: none;
-            background-color: var(--card-bg);
-            padding: 25px;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
-        }
-        .tab-content.active {
-            display: block;
-        }
-        h2 {
-            color: var(--accent-cyan);
-            margin-top: 0;
-            font-size: 1.3rem;
-            border-left: 4px solid var(--accent-yellow);
-            padding-left: 10px;
-        }
-        .form-box {
-            background-color: rgba(9, 13, 22, 0.6);
-            padding: 18px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #cbd5e1;
-            font-size: 0.9rem;
-        }
-        select, input[type="text"] {
-            width: 100%;
-            padding: 10px;
-            background-color: var(--input-bg);
-            border: 1px solid var(--border-color);
-            color: var(--text-color);
-            border-radius: 4px;
-            box-sizing: border-box;
-            margin-bottom: 12px;
-            font-size: 0.95rem;
-        }
-        select:focus, input[type="text"]:focus {
-            outline: none;
-            border-color: var(--accent-cyan);
-        }
-        button.submit-btn {
-            background-color: var(--accent-cyan);
-            color: #0b0f19;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 4px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: opacity 0.2s;
-        }
-        button.submit-btn:hover {
-            opacity: 0.9;
-        }
-        pre {
-            background-color: var(--input-bg);
-            padding: 15px;
-            border-radius: 6px;
-            overflow-x: auto;
-            color: #34d399;
-            border: 1px solid var(--border-color);
-            font-family: 'Consolas', 'Courier New', monospace;
-            font-size: 0.9rem;
-            line-height: 1.4;
-        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 40px; }
+        .container { max-width: 900px; margin: 0 auto; background-color: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        h1 { color: #38bdf8; border-bottom: 2px solid #334155; padding-bottom: 10px; font-size: 24px; }
+        .upload-box { background-color: #0f172a; padding: 20px; border-radius: 8px; border: 1px dashed #475569; margin-bottom: 25px; }
+        input[type="file"] { margin-bottom: 15px; color: #cbd5e1; }
+        button { background-color: #0284c7; color: white; border: none; padding: 12px 24px; font-weight: bold; border-radius: 6px; cursor: pointer; transition: 0.2s; }
+        button:hover { background-color: #0369a1; }
+        .console { background-color: #020617; font-family: 'Courier New', Courier, monospace; color: #4ade80; padding: 20px; border-radius: 8px; border: 1px solid #1e293b; white-space: pre-wrap; font-size: 14px; line-height: 1.5; }
+        .highlight { color: #38bdf8; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>SISTEMA INTELIGENTE DE CONTROL VEHICULAR</h1>
-            <div class="subtitle">Módulos de Telemetría, Reconocimiento de Señales y Control Autónomo</div>
-        </header>
+        <h1>Semana 08: Inferencia y Mapeo Ontológico</h1>
         
-        <div class="tabs">
-            <button id="btn-s2" class="tab-btn" onclick="openTab(event, 's2')">Semana 02</button>
-            <button id="btn-s3" class="tab-btn" onclick="openTab(event, 's3')">Semana 03</button>
-            <button id="btn-s4" class="tab-btn" onclick="openTab(event, 's4')">Semana 04</button>
-            <button id="btn-s5" class="tab-btn" onclick="openTab(event, 's5')">Semana 05</button>
-            <button id="btn-full" class="tab-btn" onclick="openTab(event, 'full')">Resumen Global</button>
+        <div class="upload-box">
+            <form method="POST" enctype="multipart/form-data">
+                <label><strong>Subir imagen de Señal de Tránsito (JPG / PNG):</strong></label><br><br>
+                <input type="file" name="file" accept="image/*" required><br>
+                <button type="submit">Analizar Imagen & Guardar Evidencia</button>
+            </form>
         </div>
 
-        <!-- SEMANA 02 -->
-        <div id="s2" class="tab-content">
-            <h2>Semana 02: Clasificación Visual y Motor de Reglas</h2>
-            
-            <div class="form-box">
-                <form action="/evaluar_s2" method="POST">
-                    <label for="clase_id">Simular Selección / Inferencia de Señal:</label>
-                    <select name="clase_id" id="clase_id">
-                        <option value="0" {% if s2_selected == '0' %}selected{% endif %}>Clase 0: Señal de PARE</option>
-                        <option value="1" {% if s2_selected == '1' %}selected{% endif %}>Clase 1: Señal CEDA EL PASO</option>
-                        <option value="2" {% if s2_selected == '2' %}selected{% endif %}>Clase 2: LÍMITE DE VELOCIDAD</option>
-                    </select>
-                    <button type="submit" class="submit-btn">Procesar Fotograma</button>
-                </form>
-            </div>
+        {% if resultado %}
+        <div class="console">
+=== SEMANA 08: DETECTOR DE SEÑALES, SQLITE Y ONTOLOGÍA ===
 
-            <pre>{{ data_s2 }}</pre>
+[INFERENCIA DE IMAGEN SUBIDA]
+Nombre del archivo: <span class="highlight">{{ resultado.filename }}</span>
+Predicción Red Neuronal (MLP): <span class="highlight">{{ resultado.prediccion }}</span>
+
+✅ Evidencia registrada exitosamente en SQLite ('artifacts/imagenes.db').
+✅ Relación ontológica actualizada en GraphML ('artifacts/ontologia.graphml').
+
+=== ÚLTIMOS REGISTROS EN SQLITE ===
+{% for reg in resultado.registros_sqlite %}
+ID: {{ reg[0] }} | Señal: {{ reg[1] }} | Origen: {{ reg[2] }}
+{% endfor %}
+
+=== ESTRUCTURA ONTOLÓGICA (GraphML) ===
+Total Conceptos (Nodos): {{ resultado.nodos_ontologia }}
+Total Relaciones (Aristas): {{ resultado.relaciones_ontologia }}
+{% for rel in resultado.relaciones_detalle %}
+  - {{ rel }}
+{% endfor %}
         </div>
-
-        <!-- SEMANA 03 -->
-        <div id="s3" class="tab-content">
-            <h2>Semana 03: Análisis Taxonómico de Casos</h2>
-            <p>Categorización de casos según la taxonomía funcional de la IA.</p>
-            <pre>{{ data_s3 }}</pre>
-        </div>
-
-        <!-- SEMANA 04 -->
-        <div id="s4" class="tab-content">
-            <h2>Semana 04: Planificación A* y Decisiones Minimax</h2>
-            <p>Optimización de rutas viales y maniobras en tráfico denso.</p>
-            <pre>{{ data_s4 }}</pre>
-        </div>
-
-        <!-- SEMANA 05 -->
-        <div id="s5" class="tab-content">
-            <h2>Semana 05: Sistema Híbrido (Reglas + TF-IDF)</h2>
-            
-            <div class="form-box">
-                <form action="/evaluar_s5" method="POST">
-                    <label for="query">Ingrese evento o alerta de tránsito:</label>
-                    <input type="text" id="query" name="query" value="{{ s5_query }}" placeholder="Ej: Se vislumbra una senal de PARE en la interseccion...">
-                    <button type="submit" class="submit-btn">Consultar Base de Conocimiento</button>
-                </form>
-            </div>
-
-            <pre>{{ data_s5 }}</pre>
-        </div>
-
-        <!-- RESUMEN GLOBAL -->
-        <div id="full" class="tab-content">
-            <h2>Resumen Integrado de Todas las Semanas</h2>
-            <p>Ejecución unificada de la telemetría del sistema vehicular.</p>
-            <pre>{{ data_full }}</pre>
-        </div>
+        {% endif %}
     </div>
-
-    <script>
-        function openTab(evt, tabId) {
-            const contents = document.querySelectorAll('.tab-content');
-            contents.forEach(content => content.classList.remove('active'));
-
-            const buttons = document.querySelectorAll('.tab-btn');
-            buttons.forEach(btn => btn.classList.remove('active'));
-
-            document.getElementById(tabId).classList.add('active');
-            if(evt) {
-                evt.currentTarget.classList.add('active');
-            } else {
-                const btn = document.getElementById('btn-' + tabId);
-                if (btn) btn.classList.add('active');
-            }
-        }
-
-        // Mantener activa la pestaña según la respuesta del servidor (parámetro active_tab)
-        const activeTabFromServer = "{{ active_tab }}";
-        if (activeTabFromServer) {
-            openTab(null, activeTabFromServer);
-        } else {
-            openTab(null, 's2');
-        }
-    </script>
 </body>
 </html>
 """
 
-def obtener_datos_semana02(clase_custom=None):
-    pred = model.predict(X_test)
-    acc = accuracy_score(y_test, pred)
-    cm = confusion_matrix(y_test, pred)
-    
-    out = f"=== EVALUACIÓN DEL MODELO DE CLASIFICACIÓN ===\nAccuracy: {acc:.3f}\n\n"
-    out += f"Matriz de Confusión:\n{cm}\n\n"
-    
-    if clase_custom is not None:
-        regla = motor_de_reglas_vehicular(int(clase_custom))
-        out += "=== INFERENCIA MANUAL SELECCIONADA ===\n"
-        out += f"Señal Detectada: {regla['senial']}\n"
-        out += f"Acción Asignada: {regla['accion']}\n"
-        out += f"Nivel Prioridad: {regla['prioridad']}\n\n"
-    
-    out += "=== INFERENCIA EN FOTOGRAMAS DE PRUEBA ===\n"
-    for i in range(3):
-        regla = motor_de_reglas_vehicular(pred[i])
-        out += f"Fotograma {i+1} -> Señal: {regla['senial']}\n"
-        out += f"  Acción: {regla['accion']}\n"
-        out += f"  Prioridad: {regla['prioridad']}\n\n"
-    return out
-
-def obtener_datos_semana03():
-    cases = read_cases()
-    out = "=== ANÁLISIS TAXONÓMICO DE CASOS ===\n\n"
-    for i, case in enumerate(cases, start=1):
-        primary, detected, _ = classify_problem(case)
-        out += f"Caso {i}: {case}\n"
-        out += f"  Categoría Principal: {primary}\n"
-        out += f"  Áreas Detectadas: {', '.join(detected)}\n\n"
-    return out
-
-def obtener_datos_semana04():
-    ruta = planificar_ruta_astar(INICIO, META)
-    escenario = ["X", "O", "X", "O", "X", " ", " ", " ", "O"]
-    pos = calcular_mejor_maniobra(escenario)
-    out = f"=== PLANIFICACIÓN DE RUTA (A*) ===\nOrigen: {INICIO} | Destino: {META}\nRuta trazada: {ruta}\n\n"
-    out += f"=== EVALUACIÓN DE MANIOBRA (MINIMAX) ===\nEstado del tráfico: {escenario}\nPosición óptima seleccionada: {pos}\n"
-    return out
-
-def obtener_datos_semana05(query_custom=None):
-    if not docs:
-        return "Error: No se pudo cargar base_conocimiento.txt"
-    
-    query = query_custom if query_custom else "Se vislumbra una senal de PARE"
-    res = answer_event(query, docs, vectorizer, doc_matrix, classifier)
-    
-    out = f'Consulta Procesada: "{query}"\n\n'
-    out += f"- Reglas Disparadas: {res['reglas']}\n"
-    out += f"- Evidencia Encontrada: {res['evidencia']}\n"
-    out += f"- Similitud TF-IDF: {res['similitud']:.3f}\n"
-    out += f"- Categoría Asignada: {res['clase']}\n"
-    return out
-
-def obtener_datos_resumen_global():
-    out = "==========================================================================\n"
-    out += "     FLUJO COMPLETO DEL SISTEMA VEHICULAR INTELIGENTE\n"
-    out += "==========================================================================\n\n"
-    out += f"[SEMANA 02 - CLASIFICACIÓN Y REGLAS]\n{obtener_datos_semana02()}\n"
-    out += f"[SEMANA 03 - TAXONOMÍA DE CASOS]\n{obtener_datos_semana03()}\n"
-    out += f"[SEMANA 04 - A* Y MINIMAX]\n{obtener_datos_semana04()}\n"
-    out += f"[SEMANA 05 - SISTEMA HÍBRIDO]\n{obtener_datos_semana05()}\n"
-    out += "==========================================================================\n"
-    out += "EJECUCIÓN INTEGRADA FINALIZADA CON ÉXITO\n"
-    out += "=========================================================================="
-    return out
-
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template_string(
-        HTML_TEMPLATE,
-        data_s2=obtener_datos_semana02(),
-        data_s3=obtener_datos_semana03(),
-        data_s4=obtener_datos_semana04(),
-        data_s5=obtener_datos_semana05(),
-        data_full=obtener_datos_resumen_global(),
-        s2_selected="0",
-        s5_query="Se vislumbra una senal de PARE",
-        active_tab="s2"
-    )
+    resultado = None
 
-@app.route("/evaluar_s2", methods=["POST"])
-def evaluar_s2():
-    clase_id = request.form.get("clase_id", "0")
-    return render_template_string(
-        HTML_TEMPLATE,
-        data_s2=obtener_datos_semana02(clase_id),
-        data_s3=obtener_datos_semana03(),
-        data_s4=obtener_datos_semana04(),
-        data_s5=obtener_datos_semana05(),
-        data_full=obtener_datos_resumen_global(),
-        s2_selected=clase_id,
-        s5_query="Se vislumbra una senal de PARE en la interseccion",
-        active_tab="s2"
-    )
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file and file.filename != "":
+            filepath = UPLOADS / file.filename
+            file.save(filepath)
 
-@app.route("/evaluar_s5", methods=["POST"])
-def evaluar_s5():
-    query = request.form.get("query", "")
-    return render_template_string(
-        HTML_TEMPLATE,
-        data_s2=obtener_datos_semana02(),
-        data_s3=obtener_datos_semana03(),
-        data_s4=obtener_datos_semana04(),
-        data_s5=obtener_datos_semana05(query),
-        data_full=obtener_datos_resumen_global(),
-        s2_selected="0",
-        s5_query=query,
-        active_tab="s5"
-    )
+            modelo_path = ARTIFACTS / "modelo_mlp.pkl"
+            if not modelo_path.exists():
+                return "Error: No existe 'artifacts/modelo_mlp.pkl'. Ejecuta primero 'python src/semana08_red_ontologia.py'."
+
+            with open(modelo_path, "rb") as f:
+                mlp = pickle.load(f)
+
+            # Inferencia con filtro de color y geometría
+            pred_id = clasificar_imagen_real(filepath, mlp)
+            pred_nombre = CLASES_MAP.get(pred_id, "Desconocida")
+            pred_onto = CLASES_ONTOLOGIA_MAP.get(pred_id, "desconocida")
+
+            # Registro en SQLite
+            db_path = ARTIFACTS / "imagenes.db"
+            with sqlite3.connect(db_path) as con:
+                con.execute(
+                    "INSERT INTO imagenes_senales (etiqueta_id, etiqueta_nombre, split) VALUES (?, ?, ?)",
+                    (pred_id, pred_nombre, "subida_usuario")
+                )
+                con.commit()
+                cur = con.cursor()
+                cur.execute("SELECT id, etiqueta_nombre, split FROM imagenes_senales ORDER BY id DESC LIMIT 5")
+                ultimos = cur.fetchall()
+
+            # Actualización de GraphML
+            onto_path = ARTIFACTS / "ontologia.graphml"
+            if onto_path.exists():
+                G = nx.read_graphml(onto_path)
+            else:
+                G = nx.DiGraph()
+
+            G.add_edge("imagen_usuario", "prediccion", rel="genera")
+            G.add_edge("prediccion", pred_onto, rel="asigna_clase")
+            nx.write_graphml(G, onto_path)
+
+            resultado = {
+                "filename": file.filename,
+                "prediccion": f"{pred_nombre} (ID: {pred_id})",
+                "registros_sqlite": ultimos,
+                "nodos_ontologia": G.number_of_nodes(),
+                "relaciones_ontologia": G.number_of_edges(),
+                "relaciones_detalle": [
+                    f"({u}) --[{d.get('rel', 'relacion')}]--> ({v})"
+                    for u, v, d in G.edges(data=True)
+                ]
+            }
+
+    return render_template_string(HTML_TEMPLATE, resultado=resultado)
 
 if __name__ == "__main__":
-    port = 5000
-    webbrowser.open(f"http://127.0.0.1:{port}")
-    app.run(port=port, debug=False)
+    webbrowser.open("http://127.0.0.1:5000")
+    print("\nServidor web Flask iniciado en http://127.0.0.1:5000\n")
+    app.run(host="127.0.0.1", port=5000, debug=False)

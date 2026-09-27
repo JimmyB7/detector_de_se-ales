@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d0" for="edge" attr.name="rel" attr.type="string" />
+  <graph edgedefault="directed">
+    <node id="senal_transito" />
+    <node id="reglamentaria" />
+    <node id="pare" />
+    <node id="ceda_el_paso" />
+    <node id="limite_velocidad" />
+    <node id="prohibido_girar" />
+    <node id="detector_mlp" />
+    <node id="imagen_usuario" />
+    <node id="prediccion" />
+    <edge source="senal_transito" target="reglamentaria">
+      <data key="d0">es_tipo</data>
+    </edge>
+    <edge source="reglamentaria" target="pare">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="reglamentaria" target="ceda_el_paso">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="reglamentaria" target="limite_velocidad">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="reglamentaria" target="prohibido_girar">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="detector_mlp" target="senal_transito">
+      <data key="d0">clasifica</data>
+    </edge>
+    <edge source="imagen_usuario" target="prediccion">
+      <data key="d0">genera</data>
+    </edge>
+    <edge source="prediccion" target="pare">
+      <data key="d0">asigna_clase</data>
+    </edge>
+    <edge source="prediccion" target="ceda_el_paso">
+      <data key="d0">asigna_clase</data>
+    </edge>
+  </graph>
+</graphml>
