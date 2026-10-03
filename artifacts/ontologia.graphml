@@ -4,14 +4,23 @@
   <graph edgedefault="directed">
     <node id="senal_transito" />
     <node id="reglamentaria" />
+    <node id="preventiva" />
     <node id="pare" />
     <node id="ceda_el_paso" />
-    <node id="limite_velocidad" />
-    <node id="prohibido_girar" />
-    <node id="detector_mlp" />
+    <node id="limite_velocidad_30" />
+    <node id="prohibido_girar_izquierda" />
+    <node id="prohibido_parquear" />
+    <node id="zona_escolar" />
+    <node id="peatones_en_la_via" />
+    <node id="resalto_reductor" />
+    <node id="semaforo_adelante" />
+    <node id="direccion_obligatoria" />
     <node id="imagen_usuario" />
     <node id="prediccion" />
     <edge source="senal_transito" target="reglamentaria">
+      <data key="d0">es_tipo</data>
+    </edge>
+    <edge source="senal_transito" target="preventiva">
       <data key="d0">es_tipo</data>
     </edge>
     <edge source="reglamentaria" target="pare">
@@ -20,14 +29,29 @@
     <edge source="reglamentaria" target="ceda_el_paso">
       <data key="d0">contiene_clase</data>
     </edge>
-    <edge source="reglamentaria" target="limite_velocidad">
+    <edge source="reglamentaria" target="limite_velocidad_30">
       <data key="d0">contiene_clase</data>
     </edge>
-    <edge source="reglamentaria" target="prohibido_girar">
+    <edge source="reglamentaria" target="prohibido_girar_izquierda">
       <data key="d0">contiene_clase</data>
     </edge>
-    <edge source="detector_mlp" target="senal_transito">
-      <data key="d0">clasifica</data>
+    <edge source="reglamentaria" target="prohibido_parquear">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="reglamentaria" target="direccion_obligatoria">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="preventiva" target="zona_escolar">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="preventiva" target="peatones_en_la_via">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="preventiva" target="resalto_reductor">
+      <data key="d0">contiene_clase</data>
+    </edge>
+    <edge source="preventiva" target="semaforo_adelante">
+      <data key="d0">contiene_clase</data>
     </edge>
     <edge source="imagen_usuario" target="prediccion">
       <data key="d0">genera</data>
