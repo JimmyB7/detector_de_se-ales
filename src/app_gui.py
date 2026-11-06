@@ -1,6 +1,6 @@
 """
 Sistema Inteligente de Control Vehicular y Detector de Señales de Tránsito
-Dashboard Streamlit (Dark Glassmorphism / Cyberpunk) - Semanas 02 a 11
+Dashboard Streamlit (Dark Glassmorphism / Cyberpunk) - Semanas 02 a 11, 13-14
 
 Instalar:  pip install streamlit plotly pandas numpy pillow networkx scikit-learn scikit-image pyvis
 Ejecutar:  streamlit run app_gui.py
@@ -41,6 +41,12 @@ try:
     from pyvis.network import Network
 except ImportError:
     Network = None
+
+# Importar motor de inferencia de la semana 13
+try:
+    from semana13_motor_inferencia_transito import ReglaTransito, inferir_transito, reglas_senales
+except ImportError:
+    ReglaTransito = inferir_transito = reglas_senales = None
 
 # ---------------------------------------------------------------- Rutas
 HERE = Path(__file__).resolve().parent
@@ -255,7 +261,7 @@ st.sidebar.title("🚦 Control Vehicular IA")
 st.sidebar.caption("Dashboard del semestre · Semanas 02-11")
 MODULOS = ["🏠 Sistema Integrado", "S02 · Clasificación y Reglas", "S03 · Taxonomía de Casos",
            "S04 · A* y Minimax", "S05 · Híbrido TF-IDF", "S07 · Agente Conversacional",
-           "S08 · MLP, SQLite y Ontología", "S09 · Visión Artificial", "S11 · Benchmark de Modelos"]
+           "S08 · MLP, SQLite y Ontología", "S09 · Visión Artificial", "S11 · Benchmark de Modelos", "S13 ? Motor de Inferencia L?gica", "S14 ? Red Sem?ntica de Tr?nsito"]
 pagina = st.sidebar.radio("Navegación", MODULOS)
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Modelo MLP: {'✅ cargado' if cargar_modelo() else '⚠️ no encontrado (solo reglas)'}")
@@ -555,6 +561,194 @@ Se selecciona **{df.iloc[0]['modelo']}** por ofrecer el balance idóneo entre pr
             st.markdown(adr_path.read_text(encoding="utf-8"))
 
 
+def pag_s13():
+    st.header("Semana 13 · Motor de Inferencia Lógica y Reglas de Tránsito")
+    st.caption("Implementación de ingeniería del conocimiento: hechos, reglas tipo Horn y encadenamiento hacia adelante[cite: 1].")
+
+    if reglas_senales is None:
+        st.error("No se pudo cargar el módulo `semana13_motor_inferencia_transito.py` en `src/`.")
+        return
+
+    st.subheader("📋 Catálogo de Reglas del Sistema (Reglas de Horn)")
+    for regla in reglas_senales:
+        premisas_str = " ∧ ".join(list(regla.premisas))
+        st.markdown(f"- **{regla.nombre}**: `{premisas_str}` $\\rightarrow$ **{regla.conclusion}**")
+
+    st.markdown("### 🧪 Configuración de Evidencias / Hechos Iniciales")
+
+    hechos_disponibles = [
+        "senal_pare_detectada",
+        "linea_detencion_visible",
+        "vehiculo_en_movimiento",
+        "via_despejada_tras_3s"
+    ]
+
+    hechos_seleccionados = st.multiselect(
+        "Selecciona los hechos detectados por el sistema de control:",
+        options=hechos_disponibles,
+        default=["senal_pare_detectada", "linea_detencion_visible", "vehiculo_en_movimiento"]
+    )
+
+    if st.button("🚀 Ejecutar Motor de Inferencia hacia Adelante"):
+        t0 = time.perf_counter()
+        finales, trazas = inferir_transito(hechos_seleccionados, reglas_senales)
+        timed("Inferencia lógica", t0)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### Hechos Iniciales")
+            st.write(list(hechos_seleccionados))
+        with c2:
+            st.markdown("#### Hechos Derivados Finales")
+            st.write(list(finales))
+
+        st.markdown("#### 🔍 Trazas de Reglas Activadas (Explicabilidad)")
+        if trazas:
+            st.success(f"Reglas ejecutadas secuencialmente: `{' -> '.join(trazas)}`")
+        else:
+            st.warning("No se activó ninguna regla con los hechos iniciales proporcionados.")
+
+        if "accion_frenar_emergencia" in finales:
+            st.toast("¡Acción de frenado de emergencia demostrada con éxito!", icon="🚨")
+
+
+def pag_s14():
+    st.header("Semana 14 · Red Semántica de Señales de Tránsito")
+    st.caption(
+        "Explora relaciones semánticas, jerarquías de señales y propiedades heredadas."
+    )
+
+    hechos = [
+        ("pare", "es_un", "senal_reglamentaria"),
+        ("ceda_el_paso", "es_un", "senal_reglamentaria"),
+        ("senal_reglamentaria", "es_un", "senal_transito"),
+        ("limite_velocidad", "es_un", "senal_preventiva"),
+        ("senal_preventiva", "es_un", "senal_transito"),
+        ("senal_reglamentaria", "color_borde", "rojo"),
+        ("senal_reglamentaria", "requiere_accion", "detencion_o_ceder"),
+        ("pare", "requiere_accion", "detencion_total_inmediata"),
+        ("limite_velocidad", "color_borde", "rojo_con_negro"),
+        ("limite_velocidad", "requiere_accion", "ajustar_velocidad"),
+    ]
+    red = nx.DiGraph()
+    red.add_edges_from(
+        (sujeto, objeto, {"relacion": relacion})
+        for sujeto, relacion, objeto in hechos
+    )
+
+    senales = ["pare", "ceda_el_paso", "limite_velocidad"]
+    seleccion = st.selectbox(
+        "Señal para consultar",
+        senales,
+        format_func=lambda valor: valor.replace("_", " ").capitalize(),
+    )
+
+    relaciones_taxonomicas = nx.DiGraph(
+        (sujeto, objeto)
+        for sujeto, relacion, objeto in hechos
+        if relacion == "es_un"
+    )
+    tipos = [
+        objeto
+        for objeto in relaciones_taxonomicas
+        if objeto != seleccion and nx.has_path(relaciones_taxonomicas, seleccion, objeto)
+    ]
+    propiedades = []
+    sujetos_conocidos = [seleccion, *tipos]
+    for sujeto, relacion, objeto in hechos:
+        if sujeto in sujetos_conocidos and relacion != "es_un":
+            propiedades.append({
+                "Propiedad": relacion.replace("_", " ").capitalize(),
+                "Valor": objeto.replace("_", " "),
+                "Origen": "Directa" if sujeto == seleccion else f"Heredada de {sujeto.replace('_', ' ')}",
+            })
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### Jerarquía")
+        if tipos:
+            st.success(
+                f"**{seleccion.replace('_', ' ')}** es una señal de tránsito "
+                f"({ ' → '.join(tipo.replace('_', ' ') for tipo in tipos) })."
+            )
+        else:
+            st.warning("No se encontró una jerarquía para esta señal.")
+    with c2:
+        st.markdown("#### Propiedades propias y heredadas")
+        if propiedades:
+            st.dataframe(pd.DataFrame(propiedades), use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay propiedades definidas para esta señal.")
+
+    st.subheader("🕸️ Grafo de relaciones")
+    posiciones = nx.spring_layout(red, seed=14)
+    aristas_x, aristas_y = [], []
+    anotaciones = []
+    for sujeto, objeto, datos in red.edges(data=True):
+        x0, y0 = posiciones[sujeto]
+        x1, y1 = posiciones[objeto]
+        aristas_x.extend([x0, x1, None])
+        aristas_y.extend([y0, y1, None])
+        anotaciones.append({
+            "x": x1,
+            "y": y1,
+            "ax": x0,
+            "ay": y0,
+            "xref": "x",
+            "yref": "y",
+            "axref": "x",
+            "ayref": "y",
+            "showarrow": True,
+            "arrowhead": 3,
+            "arrowsize": 1,
+            "arrowwidth": 1.2,
+            "arrowcolor": "#08fdd8",
+            "text": datos["relacion"].replace("_", " "),
+            "font": {"color": "#e6f1ff", "size": 10},
+            "bgcolor": "#0a0f24",
+        })
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=aristas_x,
+        y=aristas_y,
+        mode="lines",
+        line={"color": "#08fdd855", "width": 1},
+        hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[posiciones[nodo][0] for nodo in red.nodes],
+        y=[posiciones[nodo][1] for nodo in red.nodes],
+        mode="markers+text",
+        text=[nodo.replace("_", " ") for nodo in red.nodes],
+        textposition="bottom center",
+        textfont={"color": "#e6f1ff", "size": 11},
+        marker={
+            "size": 20,
+            "color": [
+                "#ff2e63" if nodo == seleccion else
+                "#7c3aed" if any(nodo == tipo for tipo in tipos) else
+                "#08fdd8"
+                for nodo in red.nodes
+            ],
+            "line": {"width": 1, "color": "#e6f1ff"},
+        },
+        hovertext=[nodo.replace("_", " ") for nodo in red.nodes],
+        hoverinfo="text",
+    ))
+    fig.update_layout(
+        height=560,
+        showlegend=False,
+        annotations=anotaciones,
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        margin={"l": 10, "r": 10, "t": 20, "b": 30},
+        **PLOT,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Cada flecha muestra una relación; `es un` representa la jerarquía taxonómica.")
+
+
 def pag_integrado():
     st.title("🚦 Sistema Inteligente de Control Vehicular")
     st.caption("Detector de señales de tránsito · Dashboard del semestre")
@@ -601,7 +795,9 @@ ROUTER = {
     MODULOS[5]: pag_s07,
     MODULOS[6]: pag_s08,
     MODULOS[7]: pag_s09,
-    MODULOS[8]: pag_s11
+    MODULOS[8]: pag_s11,
+    MODULOS[9]: pag_s13,
+    MODULOS[10]: pag_s14
 }
 
 try:
