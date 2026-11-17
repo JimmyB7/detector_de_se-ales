@@ -13,7 +13,7 @@ def ejecutar_prueba_semana07_senales():
     dist_info = np.linalg.norm(senal_detectada - patron_informativa)
 
     print("1. REPRESENTACIÓN NUMÉRICA")
-    print(f"   - Distancia a 'PARE': {round(float(dist_pare), 3)}")
+    print(f"   -|| Distancia a 'PARE': {round(float(dist_pare), 3)}")
     print(f"   - Distancia a 'Informativa': {round(float(dist_info), 3)}")
     if dist_pare < dist_info and dist_pare < 0.2:
         print("   -> Clasificación numéricas: Coincide con Señal de PARE")

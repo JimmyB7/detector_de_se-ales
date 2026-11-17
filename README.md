@@ -1,35 +1,47 @@
 # Detector Inteligente de Señales de Tránsito
 
-Sistema inteligente híbrido de visión artificial y control vehicular diseñado para la detección y clasificación de señales de tránsito mediante cámaras, aplicando modelos de aprendizaje automático, motores de reglas de seguridad y trazabilidad completa de eventos.
+Proyecto académico de demostración para explorar clasificación de señales, visión artificial, reglas de tránsito, bases de conocimiento y trazabilidad. El dashboard principal está construido con Streamlit.
 
-## 🛠 Arquitectura del Sistema
+## Requisitos
 
-El proyecto combina un enfoque modular y híbrido adaptado a las necesidades de asistencia de conducción y seguridad vial:
-- **Clasificador Taxonómico (Semana 03):** Categoriza automáticamente los casos de estudio y requerimientos del sistema en áreas clave como visión por computador, aprendizaje predictivo y sistemas expertos.
-- **Procesador de Visión e IA (Semana 02):** Ejecuta la línea base de modelos supervisados para el procesamiento y reconocimiento de características viales.
-- **Motor de Reglas y Control Vehicular:** Traduce las detecciones e inferencias de la IA en instrucciones de control operativo (ej. frenado o alertas ante señales críticas como Pare o Ceda el Paso).
-- **Trazabilidad y Auditoría:** Registra cada evento, traza y acción del sistema en un registro persistente estructurado (`artifacts/audit.log`).
+- Python 3.10 o superior
+- Dependencias de `requirements.txt`
 
-## 📦 Stack Tecnológico
-- **Python 3.13+** - Lenguaje base estandarizado para compatibilidad con librerías científicas y de machine learning.
-- **Scikit-learn** - Modelos de clasificación supervisada.
-- **Pandas / NumPy** - Procesamiento y manejo de datos estructurados.
-- **OpenCV (Opcional/Integrado)** - Procesamiento de fotogramas y video en tiempo real.
+## Instalación y ejecución
 
-## 🚀 Instalación y Configuración
+En Windows PowerShell:
 
-1. **Clonar el repositorio:**
-   ```bash
-   git clone []()
-   cd detector_de_señales
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+streamlit run src/app_gui.py
+```
 
-   ##  Estructura del Proyecto
+También se pueden ejecutar las prácticas individuales, por ejemplo:
 
-   ##  Autores
+```powershell
+python src\semana08_red_ontologia.py
+python src\semana14_red_semantica_transito.py
+```
 
-- Estudiantes: 
-   - Jimmy Alexander Beltran Beltran
+## Dashboard
 
-   - Ivan Andres Salas Leiva
+El panel lateral permite explorar las semanas implementadas: 02-05, 07-11 y 13-16. El módulo **Sistema Integrado** combina la clasificación, las acciones asociadas a las señales, el registro SQLite, la ontología y las referencias normativas disponibles.
 
-- Institución: ETITC - 10º Semestre
+La clasificación automática requiere `artifacts/modelo_mlp.pkl` con un estimador de cuatro clases (etiquetas `0` a `3`) entrenado con imágenes de `32 × 32` píxeles en escala de grises. Si el archivo falta o no coincide con ese contrato, el dashboard se abstiene de predecir y explica el problema. Para generar el modelo demostrativo incluido en la práctica, ejecuta `python src\semana08_red_ontologia.py`.
+
+El modelo de la semana 08 se entrena con datos sintéticos; sus resultados son demostrativos y no deben utilizarse para controlar un vehículo real.
+
+## Estructura
+
+- `src/`: dashboard y módulos de las prácticas.
+- `data/`: bases de conocimiento y datos de entrada.
+- `artifacts/`: modelos, registros y otros resultados generados.
+- `reports/`: reportes y decisiones técnicas.
+
+## Autores
+
+- Jimmy Alexander Beltran Beltran
+- Ivan Andres Salas Leiva
+- ETITC · 10.º semestre

@@ -1,11 +1,12 @@
 """
 Sistema Inteligente de Control Vehicular y Detector de Señales de Tránsito
-Dashboard Streamlit (Dark Glassmorphism / Cyberpunk) - Semanas 02 a 11, 13-14
+Dashboard Streamlit (Dark Glassmorphism / Cyberpunk) - Semanas 02-05, 07-11 y 13-16
 
-Instalar:  pip install streamlit plotly pandas numpy pillow networkx scikit-learn scikit-image pyvis
-Ejecutar:  streamlit run app_gui.py
+Instalar:  pip install streamlit plotly pandas numpy pillow networkx scikit-learn scikit-image matplotlib pyvis
+Ejecutar:  streamlit run src/app_gui.py
 """
-import heapq, json, pickle, re, sqlite3, sys, time
+import heapq, io, pickle, sqlite3, sys, time
+from contextlib import closing
 from pathlib import Path
 from time import perf_counter
 
@@ -15,7 +16,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 from PIL import Image
 
 try:
@@ -27,16 +27,20 @@ try:
     from sklearn.linear_model import LogisticRegression
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.neural_network import MLPClassifier
-    from sklearn.metrics import accuracy_score
+    from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score
 except ImportError:
-    TfidfVectorizer = None
+    TfidfVectorizer = cosine_similarity = train_test_split = make_pipeline = None
+    StandardScaler = LogisticRegression = RandomForestClassifier = MLPClassifier = None
+    accuracy_score = confusion_matrix = precision_score = recall_score = None
 try:
     from skimage.feature import canny
+    from skimage.feature import local_binary_pattern
     from skimage.filters import threshold_otsu
     from skimage.measure import label as sk_label
     from skimage.color import label2rgb
 except ImportError:
     canny = None
+    local_binary_pattern = None
 try:
     from pyvis.network import Network
 except ImportError:
@@ -44,9 +48,24 @@ except ImportError:
 
 # Importar motor de inferencia de la semana 13
 try:
-    from semana13_motor_inferencia_transito import ReglaTransito, inferir_transito, reglas_senales
+    from semana13_motor_inferencia_transito import inferir_transito, reglas_senales
 except ImportError:
-    ReglaTransito = inferir_transito = reglas_senales = None
+    inferir_transito = reglas_senales = None
+try:
+    from semana15_conocimiento_vial import (
+        buscar_articulos_validos,
+        cargar_datos_iniciales,
+        conectar,
+        inicializar_base_conocimiento,
+        validar_articulo_por_id,
+    )
+except ImportError:
+    buscar_articulos_validos = cargar_datos_iniciales = conectar = None
+    inicializar_base_conocimiento = validar_articulo_por_id = None
+try:
+    from semana16_detector_transito_pruebas import REFERENCIAS_VIALES, motor_de_referencia
+except ImportError:
+    REFERENCIAS_VIALES = motor_de_referencia = None
 
 # ---------------------------------------------------------------- Rutas
 HERE = Path(__file__).resolve().parent
@@ -104,52 +123,85 @@ PLOT = dict(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=
 @st.cache_resource
 def cargar_modelo():
     ruta = ARTIFACTS / "modelo_mlp.pkl"
+    if not ruta.is_file():
+        return None, f"No se encontró el modelo requerido: {ruta.relative_to(ROOT)}."
     try:
         with open(ruta, "rb") as f:
-            return pickle.load(f)
-    except Exception:
-        return None
+            modelo = pickle.load(f)
+    except (OSError, EOFError, pickle.PickleError, ImportError, AttributeError, ValueError) as error:
+        return None, f"No se pudo cargar el modelo: {error}"
+
+    if isinstance(modelo, dict):
+        estimador = modelo.get("modelo")
+        dimensiones = getattr(estimador, "n_features_in_", None)
+        clases = getattr(estimador, "classes_", None)
+        return None, (
+            "El checkpoint no es compatible con el detector: "
+            f"el estimador interno declara {dimensiones} características y clases {clases}; "
+            "se requieren 1024 características y las clases 0, 1, 2 y 3."
+        )
+
+    dimensiones = getattr(modelo, "n_features_in_", None)
+    clases = getattr(modelo, "classes_", None)
+    if not callable(getattr(modelo, "predict", None)):
+        return None, "El archivo no contiene un clasificador compatible."
+    if dimensiones != 32 * 32 or clases is None:
+        return None, "El modelo debe aceptar 1024 características y declarar las cuatro clases de señales."
+
+    try:
+        clases_modelo = {int(clase) for clase in clases}
+    except (TypeError, ValueError):
+        return None, "El modelo contiene etiquetas de clase no válidas."
+    if clases_modelo != {0, 1, 2, 3}:
+        return None, (
+            "El modelo no coincide con las cuatro clases del detector: "
+            f"se encontraron {sorted(clases_modelo)}."
+        )
+    return modelo, None
 
 
 def clasificar_imagen(img: Image.Image, mlp):
-    """Regla de color rojo/centro blanco (PARE vs CEDA) + fallback MLP (tu lógica original)."""
-    arr = np.array(img.convert("RGB").resize((64, 64)), dtype=np.float32)
-    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
-    rojo = ((r > 120) & (g < 90) & (b < 90)).mean()
-    c = arr[16:48, 16:48]
-    blanco = ((c[..., 0] > 180) & (c[..., 1] > 180) & (c[..., 2] > 180)).mean()
-    if rojo > 0.15:
-        return 1 if blanco > 0.35 else 0
     if mlp is None:
-        return 2
+        raise ValueError("No hay un modelo compatible para clasificar la imagen.")
     g32 = np.array(img.convert("L").resize((32, 32)), dtype=np.float32) / 255.0
-    if g32.mean() > 0.5:
-        g32 = 1.0 - g32
-    return int(mlp.predict(g32.reshape(1, -1))[0])
+    prediccion = int(mlp.predict(g32.reshape(1, -1))[0])
+    if prediccion not in CLASES:
+        raise ValueError(f"El modelo devolvió una clase desconocida: {prediccion}.")
+    return prediccion
+
+
+MODELO_MLP, ERROR_MODELO_MLP = cargar_modelo()
 
 
 def guardar_sqlite(pid):
     with sqlite3.connect(ARTIFACTS / "imagenes.db") as con:
-        con.execute("CREATE TABLE IF NOT EXISTS imagenes_senales(id INTEGER PRIMARY KEY, "
-                    "etiqueta_id INTEGER, etiqueta_nombre TEXT, split TEXT)")
+        crear_tabla_registros(con)
         con.execute("INSERT INTO imagenes_senales (etiqueta_id,etiqueta_nombre,split) VALUES (?,?,?)",
                     (pid, CLASES[pid], "subida_usuario"))
 
 
+def crear_tabla_registros(con):
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS imagenes_senales ("
+        "id INTEGER PRIMARY KEY, etiqueta_id INTEGER, etiqueta_nombre TEXT, split TEXT)"
+    )
+
+
 def leer_sqlite(n=15):
-    try:
-        with sqlite3.connect(ARTIFACTS / "imagenes.db") as con:
-            return pd.read_sql_query(f"SELECT * FROM imagenes_senales ORDER BY id DESC LIMIT {n}", con)
-    except Exception:
-        return pd.DataFrame(columns=["id", "etiqueta_id", "etiqueta_nombre", "split"])
+    if not isinstance(n, int) or n < 1:
+        raise ValueError("El límite de registros debe ser un entero positivo.")
+    with sqlite3.connect(ARTIFACTS / "imagenes.db") as con:
+        crear_tabla_registros(con)
+        return pd.read_sql_query(
+            "SELECT * FROM imagenes_senales ORDER BY id DESC LIMIT ?",
+            con,
+            params=(n,),
+        )
 
 
 def actualizar_ontologia(pid):
     ruta = ARTIFACTS / "ontologia.graphml"
-    try:
-        G = nx.read_graphml(ruta) if ruta.exists() else nx.DiGraph()
-    except Exception:
-        G = nx.DiGraph()
+    G = nx.read_graphml(ruta) if ruta.exists() else nx.DiGraph()
     G.add_edge("imagen_usuario", "prediccion", rel="genera")
     G.add_edge("prediccion", ONTO[pid], rel="asigna_clase")
     nx.write_graphml(G, ruta)
@@ -159,10 +211,7 @@ def actualizar_ontologia(pid):
 def cargar_ontologia():
     ruta = ARTIFACTS / "ontologia.graphml"
     if ruta.exists():
-        try:
-            return nx.read_graphml(ruta)
-        except Exception:
-            pass
+        return nx.read_graphml(ruta)
     G = nx.DiGraph()
     for n in ONTO.values():
         G.add_edge("senal_transito", n, rel="tiene_clase")
@@ -214,22 +263,18 @@ def minimax(payoff):
     return int(peor.argmax()), peor
 
 
-# ---------------------------------------------------------------- Datos demo
+# ---------------------------------------------------------------- Datos de las prácticas
 CASOS = [
-    {"id": "C-001", "titulo": "Vehículo ignora señal de pare en intersección", "cat": "Infracción", "areas": ["Intersección", "Señalización"], "desc": "Un vehículo no se detiene ante PARE y casi colisiona con un peatón."},
-    {"id": "C-002", "titulo": "Exceso de velocidad en zona escolar", "cat": "Velocidad", "areas": ["Zona escolar", "Peatones"], "desc": "Se supera el límite de 30 km/h en horario de entrada escolar."},
-    {"id": "C-003", "titulo": "Giro prohibido en avenida principal", "cat": "Infracción", "areas": ["Avenida", "Señalización"], "desc": "Giro a la izquierda donde la señal lo prohíbe."},
-    {"id": "C-004", "titulo": "No cede el paso en rotonda", "cat": "Prioridad", "areas": ["Rotonda", "Intersección"], "desc": "Se ingresa a la rotonda sin ceder al tráfico circulante."},
+    {"id": "C-001", "titulo": "Visión por computador y reglas", "desc": "Sistema de visión por computador para detectar señales de PARE e inferir la acción del vehículo."},
+    {"id": "C-002", "titulo": "Red neuronal y control autónomo", "desc": "Monitoreo de carril e identificación de límites de velocidad mediante red neuronal."},
+    {"id": "C-003", "titulo": "Decisión ética y priorización", "desc": "Módulo de decisión ética y priorización de frenado autónomo ante obstáculos imprevistos."},
 ]
-CAT_COLOR = {"Infracción": "#ff2e63", "Velocidad": "#ffb300", "Prioridad": "#08fdd8"}
-NORMAS = [
-    "Todo conductor debe detenerse completamente ante una señal de PARE y ceder el paso a peatones.",
-    "Ceda el paso: reduzca la velocidad y permita la circulación de vehículos con prioridad.",
-    "El límite de velocidad en zona escolar es de 30 km/h; respete la señalización vertical.",
-    "Está prohibido girar a la izquierda o realizar retorno donde exista señal de prohibido girar.",
-    "En una rotonda tiene prioridad el vehículo que ya circula dentro de ella.",
-    "El conductor debe ceder el paso al peatón en cruces señalizados y zonas peatonales.",
-]
+KB_PATH = ROOT / "data" / "base_conocimiento.txt"
+if not KB_PATH.is_file():
+    raise FileNotFoundError(f"No se encontró la base de conocimiento: {KB_PATH}")
+NORMAS = [line.strip() for line in KB_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
+if not NORMAS:
+    raise ValueError(f"La base de conocimiento está vacía: {KB_PATH}")
 REGLAS_KW = {"R-PARE": ["pare", "detener"], "R-VEL": ["velocidad", "km/h"], "R-GIRO": ["girar", "retorno"],
              "R-PRIORIDAD": ["ceda", "prioridad", "rotonda"], "R-PEATON": ["peaton", "peatón", "peatones"]}
 
@@ -258,32 +303,52 @@ def buscar_normas(q, k=3):
 
 # ---------------------------------------------------------------- Sidebar
 st.sidebar.title("🚦 Control Vehicular IA")
-st.sidebar.caption("Dashboard del semestre · Semanas 02-11")
-MODULOS = ["🏠 Sistema Integrado", "S02 · Clasificación y Reglas", "S03 · Taxonomía de Casos",
-           "S04 · A* y Minimax", "S05 · Híbrido TF-IDF", "S07 · Agente Conversacional",
-           "S08 · MLP, SQLite y Ontología", "S09 · Visión Artificial", "S11 · Benchmark de Modelos", "S13 ? Motor de Inferencia L?gica", "S14 ? Red Sem?ntica de Tr?nsito"]
+st.sidebar.caption("Dashboard del semestre · Semanas 02-05, 07-11 y 13-16")
+MODULOS = [
+    "🏠 Sistema Integrado", 
+    "S02 · Clasificación y Reglas", 
+    "S03 · Taxonomía de Casos",
+    "S04 · A* y Minimax", 
+    "S05 · Híbrido TF-IDF",
+    "S07 · Representación y autómata", 
+    "S08 · MLP, SQLite y Ontología",
+    "S09 · Visión Artificial", 
+    "S10 · Descriptores LBP", 
+    "S11 · Benchmark de Modelos",
+    "S13 · Motor de Inferencia Lógica",
+    "S14 · Red Semántica de Tránsito",
+    "S15 · Base de Conocimiento Vial",
+    "S16 · Trazabilidad de Referencias"
+]
 pagina = st.sidebar.radio("Navegación", MODULOS)
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Modelo MLP: {'✅ cargado' if cargar_modelo() else '⚠️ no encontrado (solo reglas)'}")
+st.sidebar.caption(
+    f"Modelo MLP: {'✅ compatible (4 clases)' if MODELO_MLP is not None else '⚠️ no compatible'}"
+)
 st.sidebar.caption(f"scikit-image: {'✅' if canny else '❌'} · pyvis: {'✅' if Network else '❌ (usa Plotly)'}")
 
 # ================================================================ PÁGINAS
 def pag_s02():
     st.header("Semana 02 · Clasificación visual y motor de reglas")
-    cm = np.array([[48, 2, 0, 0], [3, 45, 1, 1], [0, 1, 47, 2], [1, 0, 2, 47]])
-    tp = np.diag(cm)
-    acc = tp.sum() / cm.sum()
-    prec = np.mean(tp / cm.sum(axis=0))
-    rec = np.mean(tp / cm.sum(axis=1))
+    if model_dependencies_missing():
+        st.error("Instala scikit-learn para ejecutar la práctica de la semana 02.")
+        return
+    from semana02_fundamentos import X_test, model, y_test
+
+    predicciones = model.predict(X_test)
+    cm = confusion_matrix(y_test, predicciones, labels=[0, 1, 2])
+    acc = accuracy_score(y_test, predicciones)
+    prec = precision_score(y_test, predicciones, labels=[0, 1, 2], average="macro", zero_division=0)
+    rec = recall_score(y_test, predicciones, labels=[0, 1, 2], average="macro", zero_division=0)
     c1, c2, c3 = st.columns(3)
     with c1: kpi("Accuracy", f"{acc:.1%}")
     with c2: kpi("Precisión (macro)", f"{prec:.1%}")
     with c3: kpi("Recuerdo (macro)", f"{rec:.1%}")
-    nombres = list(CLASES.values())
+    nombres = list(CLASES.values())[:3]
     fig = px.imshow(cm, x=nombres, y=nombres, text_auto=True, color_continuous_scale="Tealgrn",
                     labels=dict(x="Predicho", y="Real"))
-    fig.update_layout(title="Matriz de confusión (datos de ejemplo)", **PLOT)
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(title="Matriz de confusión (modelo de la semana 02)", **PLOT)
+    st.plotly_chart(fig, width="stretch")
     st.subheader("Simulación de fotogramas + motor de reglas")
     frames = st.multiselect("Secuencia de fotogramas detectados", nombres, default=["Limite Velocidad", "Ceda el Paso", "Pare"])
     cols = st.columns(max(len(frames), 1))
@@ -295,16 +360,45 @@ def pag_s02():
         st.toast("Prioridad CRÍTICA detectada: frenado inmediato", icon="🚨")
 
 
+def model_dependencies_missing():
+    return any(dependency is None for dependency in (
+        TfidfVectorizer, accuracy_score, confusion_matrix, precision_score, recall_score
+    ))
+
+
 def pag_s03():
     st.header("Semana 03 · Análisis taxonómico de casos viales")
-    q = st.text_input("🔎 Buscar caso", placeholder="pare, escolar, rotonda…")
-    cats = st.multiselect("Categoría", list(CAT_COLOR), default=list(CAT_COLOR))
-    res = [c for c in CASOS if c["cat"] in cats and q.lower() in (c["titulo"] + c["desc"] + " ".join(c["areas"])).lower()]
+    if model_dependencies_missing():
+        st.error("Instala scikit-learn para clasificar los casos por área de inteligencia artificial.")
+        return
+    from semana03_taxonomia import classify_problem
+
+    casos_clasificados = []
+    for caso in CASOS:
+        principal, areas, _ = classify_problem(caso["desc"])
+        casos_clasificados.append({**caso, "cat": principal, "areas": areas})
+    colores = {
+        "Visión Artificial": "#08fdd8",
+        "Sistemas Basados en Reglas": "#ffb300",
+        "Robótica y Control": "#ff2e63",
+        "General": "#7c3aed",
+    }
+    q = st.text_input("🔎 Buscar caso", placeholder="señales, redes neuronales, autonomía…")
+    areas_disponibles = sorted({area for caso in casos_clasificados for area in caso["areas"]})
+    cats = st.multiselect("Área de inteligencia artificial", areas_disponibles, default=areas_disponibles)
+    res = [
+        caso for caso in casos_clasificados
+        if any(area in cats for area in caso["areas"])
+        and q.lower() in (caso["titulo"] + caso["desc"] + " ".join(caso["areas"])).lower()
+    ]
     st.caption(f"{len(res)} caso(s)")
     for c in res:
         with st.expander(f'{c["id"]} · {c["titulo"]}'):
-            st.markdown(pill(c["cat"], CAT_COLOR[c["cat"]]) + "".join(pill(a, "#7c3aed") for a in c["areas"]),
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'Área principal: {pill(c["cat"], colores.get(c["cat"], "#7c3aed"))}'
+                + "".join(pill(a, colores.get(a, "#7c3aed")) for a in c["areas"]),
+                unsafe_allow_html=True,
+            )
             st.write(c["desc"])
 
 
@@ -334,7 +428,7 @@ def pag_s04():
         vis[ini], vis[fin] = 2, 2
         fig = px.imshow(vis, color_continuous_scale=[[0, "#0a0f24"], [.25, "#7c3aed"], [.5, "#08fdd8"], [.75, "#ffb300"], [1, "#ff2e63"]], zmin=0, zmax=4)
         fig.update_layout(coloraxis_showscale=False, height=520, title="Violeta: explorado · Ámbar: ruta · Rojo: obstáculo", **PLOT)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         if ruta:
             st.success(f"Ruta óptima: {len(ruta)-1} pasos · {len(orden)} nodos explorados")
     with t2:
@@ -348,7 +442,7 @@ def pag_s04():
         mejor, peor = minimax(payoff)
         fig = px.imshow(payoff, x=RIVAL, y=MANIOBRAS, text_auto=True, color_continuous_scale="RdYlGn")
         fig.update_layout(title="Tablero de utilidades", **PLOT)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
         st.success(f"Maniobra óptima (Minimax): **{MANIOBRAS[mejor]}** — peor caso garantizado: {peor[mejor]:.0f}")
 
 
@@ -393,7 +487,47 @@ def responder(msg, mem):
 
 
 def pag_s07():
-    st.header("Semana 07 · Agente conversacional adaptativo")
+    st.header("Semana 07 · Representación numérica, simbólica y autómata")
+    st.subheader("Representación numérica")
+    senal = np.array([0.82, 0.05, 0.95])
+    patron_pare = np.array([0.85, 0.00, 0.98])
+    patron_informativa = np.array([0.05, 0.80, 0.50])
+    dist_pare = float(np.linalg.norm(senal - patron_pare))
+    dist_informativa = float(np.linalg.norm(senal - patron_informativa))
+    c1, c2 = st.columns(2)
+    with c1: kpi("Distancia a PARE", f"{dist_pare:.3f}")
+    with c2: kpi("Distancia a señal informativa", f"{dist_informativa:.3f}")
+    st.caption("La señal coincide con PARE cuando su distancia al patrón es menor que 0.2.")
+
+    st.subheader("Representación simbólica e inferencia por reglas")
+    hechos = {
+        "color_predominante_rojo", "forma_octogonal", "texto_pare",
+        "visibilidad_alta", "cerca_de_interseccion",
+    }
+    st.write("Hechos detectados:", ", ".join(sorted(hechos)))
+    if {"color_predominante_rojo", "forma_octogonal"}.issubset(hechos):
+        st.success("Regla activada: señal PARE identificada; detener el vehículo.")
+
+    st.subheader("Autómata de secuencia de señales (FSM)")
+    secuencia = st.text_input("Secuencia (P: preaviso, R: reducción, F: fin)", "PRF").upper().replace(" ", "")
+    transiciones = {
+        ("q0", "P"): "q1", ("q0", "R"): "q0", ("q0", "F"): "q0",
+        ("q1", "R"): "q2", ("q1", "P"): "q1", ("q1", "F"): "q0",
+        ("q2", "F"): "q3", ("q2", "P"): "q1", ("q2", "R"): "q2",
+        ("q3", "P"): "q1", ("q3", "R"): "q0", ("q3", "F"): "q0",
+    }
+    if any(simbolo not in {"P", "R", "F"} for simbolo in secuencia):
+        st.error("La secuencia solo puede contener P, R y F.")
+    else:
+        estado = "q0"
+        for simbolo in secuencia:
+            estado = transiciones[(estado, simbolo)]
+        if estado == "q3":
+            st.success(f"La secuencia `{secuencia}` completa correctamente el recorrido regulado.")
+        else:
+            st.info(f"La secuencia `{secuencia}` termina en el estado {estado}; no completa el recorrido.")
+
+    st.subheader("Asistente conversacional integrado")
     ss = st.session_state
     ss.setdefault("chat", [("assistant", "Hola 👋 Soy tu agente vial. Pregunta por normas, reglas de señales o rutas.")])
     ss.setdefault("mem", {})
@@ -421,7 +555,7 @@ def mostrar_grafo(G):
             net.add_node(n, label=n, color="#08fdd8")
         for u, v, d in G.edges(data=True):
             net.add_edge(u, v, label=d.get("rel", ""), color="#7c3aed")
-        components.html(net.generate_html(), height=500)
+        st.iframe(net.generate_html(), height=500)
     else:
         pos = nx.spring_layout(G, seed=3)
         ex, ey = [], []
@@ -431,22 +565,35 @@ def mostrar_grafo(G):
                          go.Scatter(x=[pos[n][0] for n in G], y=[pos[n][1] for n in G], mode="markers+text",
                                     text=list(G.nodes), textposition="top center", marker=dict(size=16, color="#08fdd8"))])
         fig.update_layout(showlegend=False, xaxis_visible=False, yaxis_visible=False, **PLOT)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 def pag_s08():
     st.header("Semana 08 · Inferencia MLP, SQLite y ontología")
-    f = st.file_uploader("Arrastra una imagen de señal de tránsito", type=["png", "jpg", "jpeg", "bmp", "webp"])
-    if f:
+    if MODELO_MLP is None:
+        st.warning(ERROR_MODELO_MLP)
+    f = st.file_uploader(
+        "Arrastra una imagen de señal de tránsito",
+        type=["png", "jpg", "jpeg", "bmp", "webp"],
+        key="s08_upload",
+    )
+    procesar = st.button(
+        "Procesar imagen",
+        key="s08_process",
+        disabled=f is None or MODELO_MLP is None,
+    )
+    if procesar and f is not None:
         try:
-            img = Image.open(f)
-            img.convert("RGB").save(UPLOADS / Path(f.name).name)
+            if MODELO_MLP is None:
+                raise ValueError(ERROR_MODELO_MLP)
+            img = Image.open(f).convert("RGB")
+            img.save(UPLOADS / Path(f.name).name)
             t0 = time.perf_counter()
-            pid = clasificar_imagen(img, cargar_modelo())
+            pid = clasificar_imagen(img, MODELO_MLP)
             guardar_sqlite(pid)
             actualizar_ontologia(pid)
             c1, c2 = st.columns([1, 2])
-            c1.image(img, caption=f.name, use_container_width=True)
+            c1.image(img, caption=f.name, width="stretch")
             a, p, col = REGLAS[CLASES[pid]]
             c2.markdown(f'<div class="glass"><h3>{CLASES[pid]}</h3>{pill(p, col)}<p>{a}</p></div>', unsafe_allow_html=True)
             timed("Inferencia + SQLite + ontología", t0)
@@ -454,7 +601,7 @@ def pag_s08():
         except Exception as e:
             st.error(f"No se pudo procesar la imagen: {e}")
     st.subheader("Últimos registros (SQLite)")
-    st.dataframe(leer_sqlite(), use_container_width=True, hide_index=True)
+    st.dataframe(leer_sqlite(), width="stretch", hide_index=True)
     st.subheader("Grafo ontológico")
     mostrar_grafo(cargar_ontologia())
 
@@ -484,32 +631,115 @@ def pag_s09():
         for tab, (nombre, v) in zip(tabs, vistas.items()):
             with tab:
                 a, b = st.columns(2)
-                a.image(orig, caption="Original", use_container_width=True)
-                b.image(v, caption=nombre, use_container_width=True, clamp=True)
+                a.image(orig, caption="Original", width="stretch")
+                b.image(v, caption=nombre, width="stretch", clamp=True)
     except Exception as e:
         st.error(f"Error en el procesamiento: {e}")
 
 
+def pag_s10():
+    st.header("Semana 10 · Reconocimiento de imágenes y descriptores LBP")
+    st.caption("Extrae características de regiones, intensidad y textura para una señal.")
+    if local_binary_pattern is None:
+        st.error("Instala scikit-image: `pip install scikit-image`")
+        return
+
+    f = st.file_uploader("Imagen de señal a analizar", type=["png", "jpg", "jpeg", "bmp", "webp"], key="v10")
+    if not f:
+        st.info("Sube una imagen para extraer sus características.")
+        return
+
+    try:
+        img = Image.open(f).convert("L")
+        gris = np.array(img, dtype=np.uint8)
+        t0 = time.perf_counter()
+        from semana10_reconocimiento import extraer_vector_caracteristicas_senal
+
+        vector, mascara = extraer_vector_caracteristicas_senal(gris)
+        ruta_vector = ARTIFACTS / "semana10_features.npy"
+        np.save(ruta_vector, vector)
+        timed("Extracción de características", t0)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: kpi("Área media", f"{vector[0]:.1f} px")
+        with c2: kpi("Desviación de área", f"{vector[1]:.1f} px")
+        with c3: kpi("Regiones", f"{int(vector[2])}")
+        with c4: kpi("Características", len(vector))
+
+        izquierda, derecha = st.columns(2)
+        izquierda.image(gris, caption="Imagen en escala de grises", width="stretch")
+        derecha.image(mascara, caption="Máscara segmentada con Otsu", width="stretch")
+
+        datos = pd.DataFrame({
+            "Índice": list(range(3, len(vector))),
+            "Valor": vector[3:],
+            "Descriptor": ["Intensidad"] * 32 + ["Textura LBP"] * len(vector[35:]),
+        })
+        fig = px.bar(datos, x="Índice", y="Valor", facet_col="Descriptor",
+                     title="Histogramas de intensidad y textura LBP")
+        fig.update_layout(**PLOT)
+        st.plotly_chart(fig, width="stretch")
+        st.success(f"Vector de características guardado en `{ruta_vector.relative_to(ROOT)}`.")
+    except Exception as e:
+        st.error(f"No se pudieron extraer las características: {e}")
+
+
+def cargar_datos_benchmark():
+    clases = {
+        0: "0_pare",
+        1: "1_ceda_el_paso",
+        2: "2_limite_velocidad",
+        3: "3_prohibido_girar",
+    }
+    imagenes, etiquetas = [], []
+    base = ROOT / "data" / "img"
+    for clase, carpeta in clases.items():
+        ruta_clase = base / carpeta
+        if not ruta_clase.is_dir():
+            continue
+        for ruta_imagen in ruta_clase.iterdir():
+            if ruta_imagen.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                continue
+            with Image.open(ruta_imagen) as imagen:
+                vector = np.asarray(imagen.convert("L").resize((32, 32)), dtype=np.float32).ravel() / 255.0
+            imagenes.append(vector)
+            etiquetas.append(clase)
+
+    conteos = np.bincount(etiquetas, minlength=4) if etiquetas else np.zeros(4, dtype=int)
+    usa_sinteticos = len(imagenes) < 20 or np.any(conteos < 2)
+    if usa_sinteticos:
+        rng = np.random.default_rng(42)
+        return rng.random((120, 1024)), rng.integers(0, 4, size=120), True
+    return np.asarray(imagenes), np.asarray(etiquetas), False
+
+
 def pag_s11():
     st.header("Semana 11 · Benchmark de Tres Modelos y Decisión Técnica (ADR)")
-    st.caption("Comparación controlada de Logistic Regression, Random Forest y MLP sobre el mismo split de datos.")
+    st.caption("Compara tres modelos sobre el mismo conjunto de imágenes y partición de entrenamiento.")
+    if any(dependency is None for dependency in (
+        train_test_split, make_pipeline, StandardScaler, LogisticRegression,
+        RandomForestClassifier, MLPClassifier, accuracy_score,
+    )):
+        st.error("Instala scikit-learn para ejecutar el benchmark.")
+        return
 
     if st.button("🚀 Ejecutar Benchmark de Modelos"):
         with st.spinner("Entrenando y evaluando modelos bajo el mismo protocolo..."):
             try:
-                np.random.seed(42)
-                # Simulación de datos estables de señales si no hay dataset masivo local
-                X = np.random.rand(400, 1024)
-                y = np.random.randint(0, 4, size=400)
-                
+                X, y, usa_sinteticos = cargar_datos_benchmark()
+                if usa_sinteticos:
+                    st.warning(
+                        "No hay al menos 20 imágenes válidas con muestras de las cuatro clases en "
+                        "`data/img`; se usarán datos sintéticos para completar la demostración."
+                    )
                 X_train, X_test, y_train, y_test = train_test_split(
                     X, y, test_size=0.25, random_state=42, stratify=y
                 )
 
                 models = {
-                    "logistic": make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000, random_state=42)),
-                    "forest": RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1),
-                    "mlp": make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(64,), max_iter=300, random_state=42))
+                    "logistic": make_pipeline(StandardScaler(), LogisticRegression(max_iter=1500, random_state=42)),
+                    "forest": RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1),
+                    "mlp": make_pipeline(StandardScaler(), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=400, random_state=42))
                 }
 
                 rows = []
@@ -527,11 +757,10 @@ def pag_s11():
                 df = pd.DataFrame(rows).sort_values("accuracy", ascending=False)
                 df.to_csv(ARTIFACTS / "benchmark.csv", index=False)
 
-                # Generar reporte ADR automático
                 adr_content = f"""# ADR Semana 11 - Selección de Modelo
 
 ## Contexto
-Se evaluaron tres modelos de clasificación para el detector de señales de tránsito bajo un protocolo estricto (mismo dataset y semilla).
+Se evaluaron tres modelos de clasificación para el detector de señales de tránsito bajo un protocolo estricto (mismo dataset, partición y semilla). El dataset local se carga desde `data/img`; si no contiene suficientes imágenes de las cuatro clases, se utiliza un conjunto sintético de respaldo.
 
 ## Evidencia
 Resultados extraídos de `artifacts/benchmark.csv`:
@@ -544,16 +773,15 @@ Se selecciona **{df.iloc[0]['modelo']}** por ofrecer el balance idóneo entre pr
                     f.write(adr_content)
 
                 st.success("¡Benchmark ejecutado con éxito! Artefactos guardados.")
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
             except Exception as e:
                 st.error(f"Error al ejecutar el benchmark: {e}")
 
-    # Mostrar resultados guardados previamente si existen
     csv_path = ARTIFACTS / "benchmark.csv"
     if csv_path.exists():
         st.subheader("📊 Último Benchmark Registrado (`benchmark.csv`)")
         df_saved = pd.read_csv(csv_path)
-        st.dataframe(df_saved, use_container_width=True, hide_index=True)
+        st.dataframe(df_saved, width="stretch", hide_index=True)
 
     adr_path = REPORTS / "semana11_adr.md"
     if adr_path.exists():
@@ -564,7 +792,7 @@ Se selecciona **{df.iloc[0]['modelo']}** por ofrecer el balance idóneo entre pr
 def pag_s13():
     st.header("Semana 13 · Motor de Inferencia Lógica y Reglas de Tránsito")
     st.caption("Implementación de ingeniería del conocimiento: hechos, reglas tipo Horn y encadenamiento hacia adelante[cite: 1].")
-
+    
     if reglas_senales is None:
         st.error("No se pudo cargar el módulo `semana13_motor_inferencia_transito.py` en `src/`.")
         return
@@ -575,14 +803,14 @@ def pag_s13():
         st.markdown(f"- **{regla.nombre}**: `{premisas_str}` $\\rightarrow$ **{regla.conclusion}**")
 
     st.markdown("### 🧪 Configuración de Evidencias / Hechos Iniciales")
-
+    
     hechos_disponibles = [
         "senal_pare_detectada",
         "linea_detencion_visible",
         "vehiculo_en_movimiento",
         "via_despejada_tras_3s"
     ]
-
+    
     hechos_seleccionados = st.multiselect(
         "Selecciona los hechos detectados por el sistema de control:",
         options=hechos_disponibles,
@@ -593,7 +821,7 @@ def pag_s13():
         t0 = time.perf_counter()
         finales, trazas = inferir_transito(hechos_seleccionados, reglas_senales)
         timed("Inferencia lógica", t0)
-
+        
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("#### Hechos Iniciales")
@@ -601,13 +829,13 @@ def pag_s13():
         with c2:
             st.markdown("#### Hechos Derivados Finales")
             st.write(list(finales))
-
+            
         st.markdown("#### 🔍 Trazas de Reglas Activadas (Explicabilidad)")
         if trazas:
             st.success(f"Reglas ejecutadas secuencialmente: `{' -> '.join(trazas)}`")
         else:
             st.warning("No se activó ninguna regla con los hechos iniciales proporcionados.")
-
+            
         if "accion_frenar_emergencia" in finales:
             st.toast("¡Acción de frenado de emergencia demostrada con éxito!", icon="🚨")
 
@@ -622,8 +850,8 @@ def pag_s14():
         ("pare", "es_un", "senal_reglamentaria"),
         ("ceda_el_paso", "es_un", "senal_reglamentaria"),
         ("senal_reglamentaria", "es_un", "senal_transito"),
-        ("limite_velocidad", "es_un", "senal_preventiva"),
-        ("senal_preventiva", "es_un", "senal_transito"),
+        ("limite_velocidad", "es_un", "senal_reglamentaria"),
+        ("senal_reglamentaria", "es_un", "senal_transito"),
         ("senal_reglamentaria", "color_borde", "rojo"),
         ("senal_reglamentaria", "requiere_accion", "detencion_o_ceder"),
         ("pare", "requiere_accion", "detencion_total_inmediata"),
@@ -676,7 +904,7 @@ def pag_s14():
     with c2:
         st.markdown("#### Propiedades propias y heredadas")
         if propiedades:
-            st.dataframe(pd.DataFrame(propiedades), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(propiedades), width="stretch", hide_index=True)
         else:
             st.info("No hay propiedades definidas para esta señal.")
 
@@ -745,45 +973,324 @@ def pag_s14():
         margin={"l": 10, "r": 10, "t": 20, "b": 30},
         **PLOT,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Cada flecha muestra una relación; `es un` representa la jerarquía taxonómica.")
+
+
+def pag_s15():
+    st.header("Semana 15 · Base de Conocimiento Vial")
+    st.caption("Consulta artículos normativos validados y administra la aprobación de borradores.")
+
+    if (
+        buscar_articulos_validos is None
+        or cargar_datos_iniciales is None
+        or conectar is None
+        or inicializar_base_conocimiento is None
+        or validar_articulo_por_id is None
+    ):
+        st.error("No se pudo cargar `semana15_conocimiento_vial.py` desde `src/`.")
+        return
+
+    ruta_db = str(ROOT / "data" / "senales_conocimiento.db")
+    if st.button("🗄️ Inicializar y cargar datos de ejemplo"):
+        try:
+            inicializar_base_conocimiento(ruta_db)
+            cargar_datos_iniciales(ruta_db)
+        except sqlite3.Error as error:
+            st.error(f"No se pudo preparar la base de conocimiento: {error}")
+            return
+        st.success("Base de conocimiento preparada.")
+
+    try:
+        with closing(conectar(ruta_db)) as conexion:
+            dominios = [
+                fila[0]
+                for fila in conexion.execute(
+                    "SELECT nombre FROM dominio_vial ORDER BY nombre"
+                )
+            ]
+            borradores = conexion.execute(
+                """
+                SELECT id, codigo_senal, titulo
+                FROM articulo_normativo
+                WHERE estado = 'BORRADOR'
+                ORDER BY id
+                """
+            ).fetchall()
+    except sqlite3.OperationalError:
+        st.info("Inicializa la base de conocimiento para crear sus tablas y datos de ejemplo.")
+        return
+    except sqlite3.Error as error:
+        st.error(f"No se pudo consultar la base de conocimiento: {error}")
+        return
+
+    if not dominios:
+        st.warning("No hay dominios viales registrados.")
+        return
+
+    dominio = st.selectbox("Dominio vial", dominios)
+    try:
+        articulos = buscar_articulos_validos(dominio, ruta_db)
+    except sqlite3.Error as error:
+        st.error(f"No se pudieron consultar los artículos validados: {error}")
+        return
+
+    st.subheader("Artículos validados")
+    if articulos:
+        st.dataframe(
+            pd.DataFrame(
+                articulos,
+                columns=["Señal", "Título", "Contenido", "Responsable", "Fuente", "Estado"],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("No hay artículos validados para este dominio.")
+
+    st.subheader("Aprobación de borradores")
+    if not borradores:
+        st.info("No hay borradores pendientes de aprobación.")
+        return
+
+    articulo_id = st.selectbox(
+        "Borrador pendiente",
+        options=[fila[0] for fila in borradores],
+        format_func=lambda id_articulo: next(
+            f"{senal} · {titulo}"
+            for id_fila, senal, titulo in borradores
+            if id_fila == id_articulo
+        ),
+    )
+    if st.button("✅ Validar artículo seleccionado"):
+        try:
+            validar_articulo_por_id(articulo_id, ruta_db)
+        except sqlite3.Error as error:
+            st.error(f"No se pudo validar el artículo: {error}")
+        else:
+            st.success("Artículo validado.")
+            st.rerun()
+
+
+def pag_s16():
+    st.header("Semana 16 · Detector y Trazabilidad de Referencias")
+    st.caption("Consulta la guía de tránsito y recibe respuestas solo de referencias aprobadas.")
+
+    if REFERENCIAS_VIALES is None or motor_de_referencia is None:
+        st.error("No se pudo cargar `semana16_detector_transito_pruebas.py` desde `src/`.")
+        return
+
+    with st.form("consulta_referencia_s16"):
+        consulta = st.text_input(
+            "Descripción de la señal o situación vial",
+            placeholder="Ejemplo: señal de pare octagonal",
+        )
+        consultar = st.form_submit_button("🔎 Consultar referencias")
+
+    if consultar:
+        if not consulta.strip():
+            st.warning("Escribe una descripción para realizar la consulta.")
+        else:
+            resultado = motor_de_referencia(consulta)
+            if resultado["estado"] == "ENCONTRADA":
+                st.success(f"Referencia encontrada: {resultado['titulo']}")
+                st.write(resultado["respuesta"])
+                st.caption(f"Fuente: {resultado['id']} · {resultado['fuente']}")
+            else:
+                st.warning(resultado["respuesta"])
+                st.caption(f"Estado: {resultado['estado']} · {resultado['fuente']}")
+
+    referencias_aprobadas = [
+        {
+            "ID": referencia["id"],
+            "Título": referencia["titulo"],
+            "Fuente": referencia["fuente"],
+        }
+        for referencia in REFERENCIAS_VIALES
+        if referencia["validada"]
+    ]
+    st.subheader("Referencias aprobadas")
+    st.dataframe(
+        pd.DataFrame(referencias_aprobadas),
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption("Las referencias no aprobadas se excluyen del motor de consulta.")
 
 
 def pag_integrado():
     st.title("🚦 Sistema Inteligente de Control Vehicular")
-    st.caption("Detector de señales de tránsito · Dashboard del semestre")
+    st.caption("Clasificación, reglas de tránsito, consulta normativa y registro de eventos.")
+    if MODELO_MLP is None:
+        st.warning(
+            f"No se realizarán predicciones automáticas. {ERROR_MODELO_MLP} "
+            "El modelo compatible se genera desde `src/semana08_red_ontologia.py`."
+        )
+
+    f = st.file_uploader("⚡ Pipeline completo: sube una señal", type=["png", "jpg", "jpeg", "webp"], key="full")
+    procesar = st.button(
+        "Procesar imagen",
+        key="full_process",
+        disabled=f is None or MODELO_MLP is None,
+    )
+    if procesar and f is not None and MODELO_MLP is not None:
+        try:
+            imagen_bytes = f.getvalue()
+            img = Image.open(io.BytesIO(imagen_bytes)).convert("RGB")
+            t0 = time.perf_counter()
+            pid = clasificar_imagen(img, MODELO_MLP)
+            norma = None
+            error_norma = None
+            try:
+                resultados_norma = buscar_normas(CLASES[pid], 1)
+                norma = resultados_norma[0] if resultados_norma else None
+            except RuntimeError as error:
+                error_norma = str(error)
+
+            referencia = (
+                motor_de_referencia(CLASES[pid])
+                if motor_de_referencia is not None
+                else None
+            )
+            articulos = []
+            error_base = None
+            dominio_por_clase = {
+                0: "Regulación Prioritaria",
+                1: "Regulación Prioritaria",
+                2: "Control de Velocidad",
+            }
+            dominio = dominio_por_clase.get(pid)
+            ruta_base = ROOT / "data" / "senales_conocimiento.db"
+            if dominio and buscar_articulos_validos is not None and ruta_base.is_file():
+                try:
+                    articulos = buscar_articulos_validos(dominio, str(ruta_base))
+                except sqlite3.Error as error:
+                    error_base = f"No se pudo consultar la base de conocimiento: {error}"
+            elif dominio:
+                error_base = "Base de conocimiento no inicializada; prepárala en la página de Semana 15."
+
+            datos_vision = None
+            error_vision = None
+            if canny is not None:
+                try:
+                    *_, umbral, regiones = vision(img, 2.0)
+                    datos_vision = {"umbral": float(umbral), "regiones": int(regiones)}
+                except (ValueError, RuntimeError) as error:
+                    error_vision = f"No se pudo completar el análisis de visión: {error}"
+
+            actualizar_ontologia(pid)
+            guardar_sqlite(pid)
+            st.session_state["integrated_result"] = {
+                "imagen": imagen_bytes,
+                "nombre_archivo": f.name,
+                "clase_id": pid,
+                "norma": norma,
+                "error_norma": error_norma,
+                "referencia": referencia,
+                "articulos": articulos,
+                "error_base": error_base,
+                "vision": datos_vision,
+                "error_vision": error_vision,
+                "tiempo_ms": (time.perf_counter() - t0) * 1000,
+            }
+        except (OSError, ValueError, RuntimeError, sqlite3.Error, nx.NetworkXException) as error:
+            st.error(f"No se pudo completar el pipeline integrado: {error}")
+
+    registros = leer_sqlite(1000)
     c = st.columns(4)
-    regs = leer_sqlite(1000)
-    with c[0]: kpi("Señales procesadas", len(regs))
+    with c[0]: kpi("Señales procesadas", len(registros))
     with c[1]: kpi("Normas indexadas", len(NORMAS))
     with c[2]: kpi("Casos viales", len(CASOS))
     with c[3]: kpi("Clases detectables", len(CLASES))
-    f = st.file_uploader("⚡ Pipeline completo: sube una señal", type=["png", "jpg", "jpeg", "webp"], key="full")
-    if f:
-        try:
-            img = Image.open(f)
-            t0 = time.perf_counter()
-            pid = clasificar_imagen(img, cargar_modelo())
-            guardar_sqlite(pid); actualizar_ontologia(pid)
-            a, p, col = REGLAS[CLASES[pid]]
-            l, r = st.columns([1, 2])
-            l.image(img, use_container_width=True)
-            r.markdown(f'<div class="glass"><h2>{CLASES[pid]}</h2>{pill(p, col)}<h4>{a}</h4></div>', unsafe_allow_html=True)
-            try:
-                r.json(buscar_normas(CLASES[pid], 1)[0])
-            except Exception:
-                pass
-            if canny:
-                *_, umbral, n = vision(img, 2.0)
-                r.caption(f"Visión: Otsu={umbral:.3f} · {n} regiones")
-            timed("Pipeline integrado", t0)
-        except Exception as e:
-            st.error(f"Error en el pipeline: {e}")
-    if len(regs):
-        fig = px.pie(regs, names="etiqueta_nombre", hole=.55, title="Distribución de señales detectadas",
+
+    resultado = st.session_state.get("integrated_result")
+    if resultado and f is not None and resultado["imagen"] == f.getvalue():
+        img = Image.open(io.BytesIO(resultado["imagen"]))
+        pid = resultado["clase_id"]
+        accion, prioridad, color = REGLAS[CLASES[pid]]
+        izquierda, derecha = st.columns([1, 2])
+        izquierda.image(img, caption=resultado["nombre_archivo"], width="stretch")
+        derecha.markdown(
+            f'<div class="glass"><h2>{CLASES[pid]}</h2>{pill(prioridad, color)}'
+            f'<h4>{accion}</h4></div>',
+            unsafe_allow_html=True,
+        )
+        derecha.caption(f"Registro SQLite: actualizado · Ontología: actualizada")
+        st.caption(f"⏱️ Pipeline integrado: {resultado['tiempo_ms']:.1f} ms")
+
+        st.subheader("Evidencia normativa")
+        if resultado["referencia"] is not None:
+            referencia = resultado["referencia"]
+            if referencia["estado"] == "ENCONTRADA":
+                st.success(
+                    f'{referencia["id"]} · {referencia["titulo"]} · {referencia["fuente"]}'
+                )
+                st.write(referencia["respuesta"])
+            else:
+                st.warning(referencia["respuesta"])
+        else:
+            st.info("El motor de referencias de la Semana 16 no está disponible.")
+
+        if pid == 0:
+            st.subheader("Inferencia lógica · Semana 13")
+            if inferir_transito is None or reglas_senales is None:
+                st.info("El motor lógico de la Semana 13 no está disponible.")
+            else:
+                evidencias = st.multiselect(
+                    "Evidencias adicionales observadas",
+                    options=[
+                        "linea_detencion_visible",
+                        "vehiculo_en_movimiento",
+                        "via_despejada_tras_3s",
+                    ],
+                    format_func=lambda hecho: hecho.replace("_", " ").capitalize(),
+                    key="integrated_facts",
+                )
+                hechos_iniciales = {"senal_pare_detectada", *evidencias}
+                hechos_finales, trazas = inferir_transito(
+                    hechos_iniciales,
+                    reglas_senales,
+                )
+                st.write("Hechos derivados:", sorted(hechos_finales))
+                if trazas:
+                    st.caption(f"Reglas activadas: {' → '.join(trazas)}")
+                else:
+                    st.info("Con las evidencias seleccionadas no se activa una regla adicional.")
+
+        if resultado["articulos"]:
+            st.dataframe(
+                pd.DataFrame(
+                    resultado["articulos"],
+                    columns=["Señal", "Título", "Contenido", "Responsable", "Fuente", "Estado"],
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        elif resultado["error_base"]:
+            st.info(resultado["error_base"])
+        else:
+            st.info("No hay artículos validados para el dominio de esta señal.")
+
+        if resultado["norma"] is not None:
+            st.json(resultado["norma"])
+        elif resultado["error_norma"]:
+            st.warning(resultado["error_norma"])
+        else:
+            st.info("No se encontró una norma textual relacionada.")
+
+        if resultado["vision"] is not None:
+            st.caption(
+                f"Visión artificial: Otsu={resultado['vision']['umbral']:.3f} · "
+                f"{resultado['vision']['regiones']} regiones"
+            )
+        elif resultado["error_vision"]:
+            st.warning(resultado["error_vision"])
+
+    if len(registros):
+        fig = px.pie(registros, names="etiqueta_nombre", hole=.55, title="Distribución de señales detectadas",
                      color_discrete_sequence=["#08fdd8", "#7c3aed", "#ffb300", "#ff2e63"])
         fig.update_layout(**PLOT)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 ROUTER = {
@@ -795,9 +1302,12 @@ ROUTER = {
     MODULOS[5]: pag_s07,
     MODULOS[6]: pag_s08,
     MODULOS[7]: pag_s09,
-    MODULOS[8]: pag_s11,
-    MODULOS[9]: pag_s13,
-    MODULOS[10]: pag_s14
+    MODULOS[8]: pag_s10,
+    MODULOS[9]: pag_s11,
+    MODULOS[10]: pag_s13,
+    MODULOS[11]: pag_s14,
+    MODULOS[12]: pag_s15,
+    MODULOS[13]: pag_s16
 }
 
 try:

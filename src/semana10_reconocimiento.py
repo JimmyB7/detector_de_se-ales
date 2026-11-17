@@ -70,7 +70,7 @@ def ejecutar_semana10_senales():
     print(f"   - Histograma de Textura LBP [35:]: {len(vector)-35} bins")
 
     # Guardar gráfico de evidencia visual en artifacts/
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    _, axes = plt.subplots(1, 2, figsize=(10, 4))
     axes[0].imshow(mascara, cmap="gray")
     axes[0].set_title("Máscara Segmentada (Otsu)")
     axes[0].axis("off")

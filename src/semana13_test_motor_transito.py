@@ -1,5 +1,5 @@
 import unittest
-from semana13_motor_inferencia_transito import ReglaTransito, inferir_transito, reglas_senales
+from semana13_motor_inferencia_transito import inferir_transito, reglas_senales
 
 class TestMotorInferenciaTransito(unittest.TestCase):
 

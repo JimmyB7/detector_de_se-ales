@@ -8,8 +8,8 @@ def construir_red_transito() -> RedSemantica:
     red.agregar_hecho("ceda_el_paso", "es_un", "senal_reglamentaria")
     red.agregar_hecho("senal_reglamentaria", "es_un", "senal_transito")
 
-    red.agregar_hecho("limite_velocidad", "es_un", "senal_preventiva")
-    red.agregar_hecho("senal_preventiva", "es_un", "senal_transito")
+    red.agregar_hecho("limite_velocidad", "es_un", "senal_reglamentaria")
+    red.agregar_hecho("senal_reglamentaria", "es_un", "senal_transito")
 
     # Propiedades y herencia (necesita / requiere_accion / color_borde)
     red.agregar_hecho("senal_reglamentaria", "color_borde", "rojo")
